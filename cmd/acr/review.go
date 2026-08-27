@@ -107,7 +107,7 @@ func newDraftCommand(options *reviewCLIOptions) *cobra.Command {
 				SessionID:       sessionID,
 				FindingsPath:    path,
 				ReviewQuestions: len(draft.QuestionResolutions),
-				NextStep:        "Fill every question resolution and finding in this file, then run acr review submit.",
+				NextStep:        "Fill every question resolution and finding, then run acr review submit --render so successful validation returns the completed report.",
 			})
 		},
 	}
@@ -159,7 +159,7 @@ func runPrepare(cmd *cobra.Command, options *reviewCLIOptions) error {
 		ReviewUnits:     len(request.Units),
 		ModelExecution:  request.Instructions.ModelExecution,
 		ReviewProfile:   request.Instructions.ReviewProfile,
-		NextStep:        "Run acr review brief for focused risk questions, inspect every unit, resolve each question in findings.json, then submit and render Markdown.",
+		NextStep:        "Run acr review brief, inspect every unit, resolve each question in findings.json, then run acr review submit --render and present its Markdown output.",
 	})
 }
 
@@ -194,7 +194,8 @@ func newHandoffCommand(options *reviewCLIOptions) *cobra.Command {
 }
 
 func newSubmitCommand(options *reviewCLIOptions) *cobra.Command {
-	var sessionID, inputPath string
+	var sessionID, inputPath, fixPrompt string
+	var render bool
 	cmd := &cobra.Command{
 		Use:   "submit",
 		Short: "Validate findings produced by the active agent",
@@ -215,11 +216,25 @@ func newSubmitCommand(options *reviewCLIOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if render && len(result.Rejected) == 0 {
+				mode, err := parseFixPromptMode(fixPrompt)
+				if err != nil {
+					return err
+				}
+				markdown, err := delegation.RenderMarkdownWithOptions(*result, delegation.RenderMarkdownOptions{FixPromptMode: mode})
+				if err != nil {
+					return err
+				}
+				_, err = io.WriteString(cmd.OutOrStdout(), markdown)
+				return err
+			}
 			return writeCommandJSON(cmd, result)
 		},
 	}
 	cmd.Flags().StringVar(&sessionID, "session", "", "prepared session id")
 	cmd.Flags().StringVar(&inputPath, "input", "", "agent findings JSON file")
+	cmd.Flags().BoolVar(&render, "render", false, "render the completed Markdown report after successful validation")
+	cmd.Flags().StringVar(&fixPrompt, "fix-prompt", string(delegation.FixPromptPerFinding), "fix prompt mode for --render: per-finding, combined, or none")
 	return cmd
 }
 
@@ -243,13 +258,17 @@ func newRenderCommand(options *reviewCLIOptions) *cobra.Command {
 			}
 			switch strings.ToLower(format) {
 			case "json":
-				if fixPrompt != "" {
+				if cmd.Flags().Changed("fix-prompt") && !strings.EqualFold(strings.TrimSpace(fixPrompt), "none") {
 					return fmt.Errorf("--fix-prompt requires --format markdown")
 				}
 				return writeCommandJSON(cmd, result)
 			case "markdown", "md":
+				mode, err := parseFixPromptMode(fixPrompt)
+				if err != nil {
+					return err
+				}
 				markdown, err := delegation.RenderMarkdownWithOptions(*result, delegation.RenderMarkdownOptions{
-					FixPromptMode: delegation.FixPromptMode(strings.ToLower(fixPrompt)),
+					FixPromptMode: mode,
 				})
 				if err != nil {
 					return err
@@ -263,8 +282,21 @@ func newRenderCommand(options *reviewCLIOptions) *cobra.Command {
 	}
 	cmd.Flags().StringVar(&sessionID, "session", "", "validated session id")
 	cmd.Flags().StringVar(&format, "format", "markdown", "output format: markdown or json")
-	cmd.Flags().StringVar(&fixPrompt, "fix-prompt", "", "include copyable fix prompts: per-finding or combined (Markdown only)")
+	cmd.Flags().StringVar(&fixPrompt, "fix-prompt", string(delegation.FixPromptPerFinding), "include copyable fix prompts: per-finding, combined, or none (Markdown only)")
 	return cmd
+}
+
+func parseFixPromptMode(value string) (delegation.FixPromptMode, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "none":
+		return delegation.FixPromptNone, nil
+	case string(delegation.FixPromptPerFinding):
+		return delegation.FixPromptPerFinding, nil
+	case string(delegation.FixPromptCombined):
+		return delegation.FixPromptCombined, nil
+	default:
+		return delegation.FixPromptNone, fmt.Errorf("unsupported fix prompt mode %q; use per-finding, combined, or none", value)
+	}
 }
 
 func readSubmission(path string) (delegation.Submission, error) {

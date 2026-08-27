@@ -92,13 +92,18 @@ func TestReviewPrepareSubmitAndRender(t *testing.T) {
 		t.Fatalf("unexpected submit result: %#v", result)
 	}
 
+	completed := string(executeCLI(t, "review", "submit", "--repo", repo, "--session", prepared.SessionID, "--input", findingPath, "--render"))
+	if !strings.Contains(completed, "# Agent Code Review") || !strings.Contains(completed, "Copyable fix prompt") || !strings.Contains(completed, "Work on exactly one validated ACR finding") {
+		t.Fatalf("submit --render did not return the completed report:\n%s", completed)
+	}
+
 	rendered := string(executeCLI(t, "review", "render", "--repo", repo, "--session", prepared.SessionID, "--format", "markdown"))
-	if !strings.Contains(rendered, "A test finding.") || !strings.Contains(rendered, "app.go:2") {
+	if !strings.Contains(rendered, "A test finding.") || !strings.Contains(rendered, "app.go:2") || !strings.Contains(rendered, "Copyable fix prompt") {
 		t.Fatalf("unexpected render output:\n%s", rendered)
 	}
-	withFixPrompt := string(executeCLI(t, "review", "render", "--repo", repo, "--session", prepared.SessionID, "--format", "markdown", "--fix-prompt", "per-finding"))
-	if !strings.Contains(withFixPrompt, "Copyable fix prompt") || !strings.Contains(withFixPrompt, "Work on exactly one validated ACR finding") {
-		t.Fatalf("rendered output missing per-finding fix prompt:\n%s", withFixPrompt)
+	withoutFixPrompt := string(executeCLI(t, "review", "render", "--repo", repo, "--session", prepared.SessionID, "--format", "markdown", "--fix-prompt", "none"))
+	if strings.Contains(withoutFixPrompt, "Copyable fix prompt") {
+		t.Fatalf("--fix-prompt none unexpectedly rendered a fix prompt:\n%s", withoutFixPrompt)
 	}
 
 	handoff := string(executeCLI(t, "review", "handoff", "--repo", repo, "--session", prepared.SessionID))
@@ -131,6 +136,49 @@ func TestBareReviewDefaultsToPrepare(t *testing.T) {
 	var prepared prepareOutput
 	if err := json.Unmarshal(output, &prepared); err != nil || prepared.SessionID == "" {
 		t.Fatalf("bare review did not prepare a session: err=%v output=%s", err, output)
+	}
+}
+
+func TestSubmitRenderReturnsRejectedFindingsAsMachineReadableJSON(t *testing.T) {
+	repo := initCLITestRepo(t)
+	if err := os.WriteFile(filepath.Join(repo, "app.go"), []byte("package app\nfunc Value() int { return 2 }\n"), 0o644); err != nil {
+		t.Fatalf("modify source: %v", err)
+	}
+
+	prepareOut := executeCLI(t, "review", "prepare", "--repo", repo)
+	var prepared prepareOutput
+	if err := json.Unmarshal(prepareOut, &prepared); err != nil {
+		t.Fatalf("decode prepare output: %v\n%s", err, prepareOut)
+	}
+	request, err := delegation.LoadRequest(repo, prepared.SessionID)
+	if err != nil {
+		t.Fatalf("load request: %v", err)
+	}
+
+	findingPath := filepath.Join(t.TempDir(), "findings.json")
+	data, err := json.Marshal(delegation.Submission{
+		ProtocolVersion: delegation.ProtocolVersion,
+		SessionID:       prepared.SessionID,
+		Findings: []delegation.Finding{{
+			UnitID: request.Units[0].ID, File: "app.go", StartLine: 999, EndLine: 999,
+			Severity: "high", Category: "bug", Explanation: "Invalid line anchor.",
+			Evidence: "This must be rejected.", Confidence: 0.9,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("encode submission: %v", err)
+	}
+	if err := os.WriteFile(findingPath, data, 0o600); err != nil {
+		t.Fatalf("write submission: %v", err)
+	}
+
+	output := executeCLI(t, "review", "submit", "--repo", repo, "--session", prepared.SessionID, "--input", findingPath, "--render")
+	var result delegation.Result
+	if err := json.Unmarshal(output, &result); err != nil {
+		t.Fatalf("rejected submit --render must return JSON: %v\n%s", err, output)
+	}
+	if len(result.Rejected) == 0 || strings.Contains(string(output), "# Agent Code Review") {
+		t.Fatalf("unexpected rejected submit output: %#v\n%s", result, output)
 	}
 }
 

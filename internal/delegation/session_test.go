@@ -218,7 +218,7 @@ func TestHandoffPromptDirectsIndependentDeepReview(t *testing.T) {
 	}
 	for _, want := range []string{
 		"independent reviewer", repo, request.SessionID, "invariants", "dependencies", "contracts", "lifecycle", "verification", "critique",
-		"Resolve every focused risk question", "question_resolutions", "acr review brief", "acr review draft", "acr review submit", "acr review render",
+		"Resolve every focused risk question", "question_resolutions", "acr review brief", "acr review draft", "acr review submit", "--render", "Do not stop at a validation summary",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("handoff prompt missing %q:\n%s", want, prompt)

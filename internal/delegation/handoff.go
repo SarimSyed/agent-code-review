@@ -40,7 +40,7 @@ func HandoffPrompt(request *Request) (string, error) {
 	fmt.Fprintln(&out, "Include evidence-backed question_resolutions plus findings in the submission. Inspect every listed file directly, submit only concrete defects, and then run:")
 	fmt.Fprintf(&out, "acr review brief --repo %s --session %s\n", request.Repository.Root, request.SessionID)
 	fmt.Fprintf(&out, "acr review draft --repo %s --session %s\n", request.Repository.Root, request.SessionID)
-	fmt.Fprintf(&out, "acr review submit --repo %s --session %s --input %s\n", request.Repository.Root, request.SessionID, filepath.Join(dir, FindingsFileName))
-	fmt.Fprintf(&out, "acr review render --repo %s --session %s --format markdown --fix-prompt per-finding\n", request.Repository.Root, request.SessionID)
+	fmt.Fprintf(&out, "acr review submit --repo %s --session %s --input %s --render\n", request.Repository.Root, request.SessionID, filepath.Join(dir, FindingsFileName))
+	out.WriteString("On successful validation, present the Markdown emitted by that command. Do not stop at a validation summary or tell the user to run a render command.\n")
 	return out.String(), nil
 }

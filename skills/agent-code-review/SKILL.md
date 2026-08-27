@@ -4,7 +4,7 @@ description: Review workspace changes, branches, commits, files, or directories 
 license: Apache-2.0
 metadata:
   author: agent-code-review contributors
-  version: "1.3.1"
+  version: "1.3.2"
 ---
 
 # Agent Code Review
@@ -69,19 +69,12 @@ Use `acr` as an evidence-driven, independent code-review workflow. `acr` perform
 
    Resolve each generated question exactly once. Outcomes are `finding` (with a zero-based `finding_index`) or `no_finding`; both require concrete evidence. Use one of the categories listed in the brief: `bug`, `security`, `performance`, `maintainability`, `test`, `style`, `documentation`, or `other`. Classify correctness defects as `bug`; ACR also normalizes `correctness` to `bug`. Findings about removed behavior may anchor to the nearest target-side line identified by the brief. An empty `findings` array is valid when every question is resolved as `no_finding`.
 
-6. Validate the response:
+6. Validate and immediately render the response:
 
    ```bash
-   acr review submit --session <session_id> --input <findings_path>
+   acr review submit --session <session_id> --input <findings_path> --render
    ```
 
-   If findings are rejected, use their machine-readable codes to repair only those entries, then submit once more. Stop and report remaining validation errors after the second failed submission.
-7. Render and present the validated result. Show the user this Markdown report rather than the transport JSON unless they explicitly request JSON:
-
-   ```bash
-   acr review render --session <session_id> --format markdown --fix-prompt per-finding
-   ```
-
-   Present each generated repair prompt directly beneath its validated finding so the user can fix one issue at a time. Use `--fix-prompt combined` only when the user explicitly prefers one prompt for all findings.
+   Rejected submissions return machine-readable JSON; repair only those entries and rerun the same command once. Successful submission returns the complete Markdown report with one repair prompt beneath each finding by default. Present that command output directly. Never stop at a validation summary, show a render command as the next step, or ask the user to generate the report. Use `--fix-prompt combined` only when the user explicitly prefers one prompt for all findings. Stop and report remaining validation errors after the second failed submission.
 
 Do not configure OpenAI, Anthropic, or another provider. The model active in Codex, Cursor, Claude Code, or the current host is the reviewer. Do not modify source files unless the user separately asks to fix validated findings. This workflow improves review discipline and independence; it does not guarantee a stronger model than the host's reviewer.

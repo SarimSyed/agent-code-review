@@ -22,8 +22,8 @@ func New(version string) *mcp.Server {
 	addTool(server, "review_get_briefing", "Load the compact risk questions, review passes, files, and changed-line anchors for a prepared review.", sessionSchema(), handleGetBriefing)
 	addTool(server, "review_create_draft", "Create a non-overwriting submission form with one slot per focused risk question.", sessionSchema(), handleCreateDraft)
 	addTool(server, "review_get_unit", "Retrieve one prepared review unit by ID.", unitSchema(), handleGetUnit)
-	addTool(server, "review_submit_findings", "Validate and persist findings produced by the active host agent.", submitSchema(), handleSubmit)
-	addTool(server, "review_validate_findings", "Validate and persist findings using the canonical local protocol.", submitSchema(), handleSubmit)
+	addTool(server, "review_submit_findings", "Validate findings and optionally return the completed Markdown report in the same call.", submitSchema(), handleSubmit)
+	addTool(server, "review_validate_findings", "Validate findings and optionally return the completed Markdown report in the same call.", submitSchema(), handleSubmit)
 	addTool(server, "review_get_result", "Load a validated review result.", sessionSchema(), handleGetResult)
 	addTool(server, "review_render", "Render a validated review result as Markdown or JSON.", renderSchema(), handleRender)
 	addTool(server, "review_handoff", "Create a prompt for an independent reviewer task from a prepared session.", sessionSchema(), handleHandoff)
@@ -66,6 +66,8 @@ type submitArgs struct {
 	Repo       string                `json:"repo"`
 	SessionID  string                `json:"session_id"`
 	Submission delegation.Submission `json:"submission"`
+	Render     bool                  `json:"render,omitempty"`
+	FixPrompt  string                `json:"fix_prompt,omitempty"`
 }
 
 type unitArgs struct {
@@ -162,7 +164,25 @@ func handleSubmit(_ context.Context, raw json.RawMessage) (any, error) {
 	if err := json.Unmarshal(raw, &args); err != nil {
 		return nil, fmt.Errorf("decode review_submit_findings arguments: %w", err)
 	}
-	return delegation.Submit(args.Repo, args.SessionID, args.Submission)
+	result, err := delegation.Submit(args.Repo, args.SessionID, args.Submission)
+	if err != nil || !args.Render || len(result.Rejected) > 0 {
+		return result, err
+	}
+	mode := delegation.FixPromptPerFinding
+	switch strings.ToLower(strings.TrimSpace(args.FixPrompt)) {
+	case "", string(delegation.FixPromptPerFinding):
+	case string(delegation.FixPromptCombined):
+		mode = delegation.FixPromptCombined
+	case "none":
+		mode = delegation.FixPromptNone
+	default:
+		return nil, fmt.Errorf("unsupported fix prompt mode %q; use per-finding, combined, or none", args.FixPrompt)
+	}
+	markdown, err := delegation.RenderMarkdownWithOptions(*result, delegation.RenderMarkdownOptions{FixPromptMode: mode})
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"format": "markdown", "content": markdown, "result": result}, nil
 }
 
 func handleGetResult(_ context.Context, raw json.RawMessage) (any, error) {
@@ -241,6 +261,8 @@ func submitSchema() map[string]any {
 	return objectSchema(map[string]any{
 		"repo": map[string]any{"type": "string"}, "session_id": map[string]any{"type": "string"},
 		"submission": map[string]any{"type": "object"},
+		"render":     map[string]any{"type": "boolean"},
+		"fix_prompt": map[string]any{"type": "string", "enum": []string{"per-finding", "combined", "none"}},
 	}, []string{"repo", "session_id", "submission"})
 }
 

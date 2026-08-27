@@ -158,6 +158,46 @@ func TestReviewRenderIncludesPerFindingFixPrompt(t *testing.T) {
 	}
 }
 
+func TestReviewSubmitCanReturnCompletedMarkdownReport(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repo, "app.go"), []byte("package app\n"), 0o600); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+	request, err := delegation.Prepare(repo, delegation.PrepareInput{
+		Mode: delegation.ModeScan,
+		Units: []delegation.PreparedUnit{{
+			ID: "unit-1", Files: []delegation.PreparedFile{{Path: "app.go"}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+
+	value, err := handleSubmit(context.Background(), rawJSON(t, map[string]any{
+		"repo": repo, "session_id": request.SessionID, "render": true,
+		"submission": map[string]any{
+			"protocol_version": delegation.ProtocolVersion,
+			"session_id":       request.SessionID,
+			"findings": []map[string]any{{
+				"unit_id": "unit-1", "file": "app.go", "start_line": 1, "end_line": 1,
+				"severity": "medium", "category": "bug", "explanation": "A validated problem.",
+				"evidence": "The source demonstrates it.", "confidence": 0.9,
+			}},
+		},
+	}))
+	if err != nil {
+		t.Fatalf("review_submit_findings: %v", err)
+	}
+	report, ok := value.(map[string]any)
+	if !ok {
+		t.Fatalf("rendered submit type = %T, want map[string]any", value)
+	}
+	content, _ := report["content"].(string)
+	if !strings.Contains(content, "# Agent Code Review") || !strings.Contains(content, "Copyable fix prompt") {
+		t.Fatalf("completed MCP report missing Markdown and fix prompt:\n%s", content)
+	}
+}
+
 func rawJSON(t *testing.T, value any) json.RawMessage {
 	t.Helper()
 	data, err := json.Marshal(value)

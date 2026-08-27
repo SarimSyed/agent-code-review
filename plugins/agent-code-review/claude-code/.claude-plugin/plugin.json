@@ -2,5 +2,5 @@
     "name": "agent-code-review",
     "commands": "./commands",
     "description": "Provider-free structured review performed by the active Claude Code model.",
-    "version": "1.3.1"
+    "version": "1.3.2"
 }

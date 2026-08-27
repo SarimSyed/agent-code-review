@@ -32,4 +32,4 @@ The `claude-code` directory supplies `/agent-code-review:review`, backed by the 
 
 When the current task also authored the change, the plugin prepares an immutable packet and produces an `acr review handoff` prompt for a separate reviewer task or host subagent. A task opened solely for review is already independent. All integrations remain read-only during review. Fixes require a separate explicit request.
 
-Rendered reports include one copyable, narrowly scoped repair prompt per validated finding by default. A combined prompt remains available through `acr review render --fix-prompt combined`.
+The plugin uses `acr review submit --render`, so successful validation immediately emits the complete report with one copyable, narrowly scoped repair prompt per finding. A combined prompt remains available through `--fix-prompt combined`.
