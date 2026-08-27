@@ -62,7 +62,7 @@ func TestReviewPrepareSubmitAndRender(t *testing.T) {
 	if err := json.Unmarshal(draftOut, &draft); err != nil {
 		t.Fatalf("decode draft output: %v\n%s", err, draftOut)
 	}
-	if draft.FindingsPath != filepath.Join(repo, ".acr", "sessions", prepared.SessionID, delegation.FindingsFileName) || !strings.Contains(draft.NextStep, "Fill") {
+	if draft.FindingsPath != filepath.Join(request.Repository.Root, ".acr", "sessions", prepared.SessionID, delegation.FindingsFileName) || !strings.Contains(draft.NextStep, "Fill") {
 		t.Fatalf("unexpected draft output: %#v", draft)
 	}
 	findingPath := filepath.Join(t.TempDir(), "findings.json")

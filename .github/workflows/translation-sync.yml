@@ -18,7 +18,7 @@ permissions:
 
 jobs:
   translation-sync:
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     container:
       # Pinned to an exact 24.x for reproducible builds, matching the

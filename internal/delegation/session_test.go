@@ -211,13 +211,13 @@ func TestPrepareRejectsUnknownReviewProfile(t *testing.T) {
 }
 
 func TestHandoffPromptDirectsIndependentDeepReview(t *testing.T) {
-	repo, request := prepareDiffFixture(t)
+	_, request := prepareDiffFixture(t)
 	prompt, err := HandoffPrompt(request)
 	if err != nil {
 		t.Fatalf("HandoffPrompt() error: %v", err)
 	}
 	for _, want := range []string{
-		"independent reviewer", repo, request.SessionID, "invariants", "dependencies", "contracts", "lifecycle", "verification", "critique",
+		"independent reviewer", request.Repository.Root, request.SessionID, "invariants", "dependencies", "contracts", "lifecycle", "verification", "critique",
 		"Resolve every focused risk question", "question_resolutions", "acr review brief", "acr review draft", "acr review submit", "--render", "Do not stop at a validation summary",
 	} {
 		if !strings.Contains(prompt, want) {

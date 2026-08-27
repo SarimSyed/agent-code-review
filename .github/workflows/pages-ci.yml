@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   check:
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     container:
       image: node:24.18.0

@@ -9,7 +9,7 @@ permissions:
 
 jobs:
   build:
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     container:
       image: golang:1.26.6
@@ -59,7 +59,7 @@ jobs:
 
   release:
     needs: build
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
       contents: write
@@ -161,7 +161,7 @@ jobs:
 
   npm-publish:
     needs: release
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     container:
       image: node:24
