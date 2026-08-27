@@ -1,0 +1,44 @@
+{
+  "name": "@agent-code-review/cli",
+  "version": "0.0.0",
+  "description": "Provider-free code review delegated to the active coding agent",
+  "bin": {
+    "acr": "bin/acr.js"
+  },
+  "files": [
+    "bin/acr.js",
+    "scripts/install.js",
+    "scripts/update.js",
+    "scripts/version.js",
+    "scripts/platform.js"
+  ],
+  "scripts": {
+    "postinstall": "node scripts/install.js",
+    "test:github-actions": "node scripts/github-actions/post-review-comments.test.js && node scripts/github-actions/check-translation-sync.test.js && node scripts/github-actions/action-contract.test.js",
+    "test:update": "node scripts/version.test.js",
+    "test:launcher": "node bin/acr.test.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/agent-code-review/agent-code-review.git"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "acrConfig": {
+    "urlPattern": "https://github.com/agent-code-review/agent-code-review/releases/download/v{version}/acr-{os}-{arch}",
+    "checksumPattern": "https://github.com/agent-code-review/agent-code-review/releases/download/v{version}/sha256sum.txt"
+  },
+  "optionalDependencies": {
+    "@agent-code-review/acr-darwin-arm64": "0.0.0",
+    "@agent-code-review/acr-darwin-x64": "0.0.0",
+    "@agent-code-review/acr-linux-arm64": "0.0.0",
+    "@agent-code-review/acr-linux-x64": "0.0.0",
+    "@agent-code-review/acr-win32-arm64": "0.0.0",
+    "@agent-code-review/acr-win32-x64": "0.0.0"
+  },
+  "engines": {
+    "node": ">=14"
+  },
+  "license": "Apache-2.0"
+}

@@ -1,0 +1,16 @@
+{
+  "name": "agent-code-review",
+  "owner": {
+    "name": "agent-code-review contributors"
+  },
+  "description": "Provider-free structured review using the active coding-agent model.",
+  "plugins": [
+    {
+      "name": "agent-code-review",
+      "source": "./plugins/agent-code-review/claude-code",
+      "description": "Prepare and validate reviews locally while Claude Code performs the reasoning.",
+      "version": "1.0.0",
+      "license": "Apache-2.0"
+    }
+  ]
+}
