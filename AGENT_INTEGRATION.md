@@ -6,17 +6,19 @@ Agent Code Review delegates all reasoning to the active coding-agent model. The 
 
 ```bash
 acr review prepare
-acr review brief --session <id>
+# Repeat through intent, impact, candidates, critique, finalize.
+acr review phase next --session <id> --worker <worker>
+acr review phase submit --session <id> --task <task> --input <phase-result>
 acr review draft --session <id>
-# Inspect every unit and resolve every focused risk question.
-# Write question_resolutions plus findings to the returned findings_path.
 acr review submit --session <id> --input <findings_path> --render
 ```
 
 Successful submission emits the complete Markdown report with one copyable prompt per finding. Present that output immediately; do not ask the user to run a separate render command. Rejected submissions remain JSON so the agent can repair them once. Use `--fix-prompt combined` only when one combined repair prompt is preferred.
 
-Use `--from/--to` for branch ranges, `--commit` for one commit, or `--path` for full-file scans. The canonical finding schema and retry behavior are defined in [`skills/agent-code-review/SKILL.md`](skills/agent-code-review/SKILL.md).
+Primary phases use one active-model context. Critique uses the same host/model in a fresh context when available, then finalize resumes the primary context. Same-context fallback is allowed but reported. Use `--caveman [--caveman-level lite|full|ultra]` for skill-backed or built-in compact communication without weakening phase requirements.
+
+Use `--from/--to` for branch ranges, `--commit` for one commit, or `--path` for full-file scans. Protocol-1 and standard sessions retain the legacy brief/draft/submit flow. The canonical behavior is defined in [`skills/agent-code-review/SKILL.md`](skills/agent-code-review/SKILL.md).
 
 ## MCP
 
-Configure the host to run `acr mcp` over stdio. It exposes prepare, compact briefing, submission-draft creation, request/unit retrieval, submit/validate, result/render, and session-list operations. The concrete tool names include `review_prepare`, `review_get_briefing`, `review_create_draft`, `review_get_request`, `review_get_unit`, `review_submit_findings`, `review_validate_findings`, `review_get_result`, `review_render`, `review_handoff`, and `review_session_list`. Set `render: true` on `review_submit_findings` or `review_validate_findings` so successful validation returns the completed Markdown report in that call; per-finding prompts are the default. Use `fix_prompt: "combined"` for one complete repair prompt or `"none"` to omit prompts.
+Configure the host to run `acr mcp` over stdio. It exposes prepare, `review_phase_next`, `review_phase_submit`, `review_phase_status`, briefing, drafts, request/unit retrieval, submit/validate, render, handoff, and sessions. MCP prepare accepts `caveman` and `caveman_level`. Set `render: true` on final submission so validated Markdown returns immediately.

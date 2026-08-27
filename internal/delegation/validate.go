@@ -4,6 +4,7 @@
 package delegation
 
 import (
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"regexp"
@@ -19,7 +20,7 @@ func Submit(repo, sessionID string, submission Submission) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
-	if submission.ProtocolVersion != ProtocolVersion {
+	if submission.ProtocolVersion != request.ProtocolVersion {
 		return nil, fmt.Errorf("unsupported submission protocol %q", submission.ProtocolVersion)
 	}
 	if submission.SessionID != sessionID {
@@ -32,13 +33,24 @@ func Submit(repo, sessionID string, submission Submission) (*Result, error) {
 	}
 
 	result := &Result{
-		ProtocolVersion:     ProtocolVersion,
-		SessionID:           sessionID,
-		QuestionResolutions: append([]QuestionResolution(nil), submission.QuestionResolutions...),
-		Findings:            make([]Finding, 0, len(submission.Findings)),
-		Rejected:            make([]Rejection, 0),
+		ProtocolVersion:       request.ProtocolVersion,
+		SessionID:             sessionID,
+		QuestionResolutions:   append([]QuestionResolution(nil), submission.QuestionResolutions...),
+		CandidateDispositions: append([]CandidateDisposition(nil), submission.CandidateDispositions...),
+		Findings:              make([]Finding, 0, len(submission.Findings)),
+		Rejected:              make([]Rejection, 0),
 	}
 	result.Rejected = validateSnapshots(request)
+	if request.Repository.TrackedSourceSHA256 != "" {
+		current, fingerprintErr := trackedSourceFingerprint(request.Repository.Root)
+		if fingerprintErr != nil || current != request.Repository.TrackedSourceSHA256 {
+			message := "tracked source changed after review preparation"
+			if fingerprintErr != nil {
+				message = fingerprintErr.Error()
+			}
+			result.Rejected = append(result.Rejected, Rejection{Index: -1, Code: "source_modified", Message: message})
+		}
+	}
 	if len(result.Rejected) > 0 {
 		result.Summary.Rejected = len(result.Rejected)
 		if err := writeJSON(filepath.Join(dir, ResultFileName), result); err != nil {
@@ -47,6 +59,23 @@ func Submit(repo, sessionID string, submission Submission) (*Result, error) {
 		return result, nil
 	}
 	result.Rejected = append(result.Rejected, validateQuestionResolutions(request, submission)...)
+	var workflow *Workflow
+	if request.ProtocolVersion == ProtocolVersion && request.Instructions.ReviewProfile == ReviewProfileDeep {
+		workflow, err = LoadWorkflow(repo, sessionID)
+		if err != nil {
+			result.Rejected = append(result.Rejected, Rejection{Index: -1, Code: "workflow_unreadable", Message: err.Error()})
+		} else {
+			result.Rejected = append(result.Rejected, validateDeepFinalization(request, workflow, submission)...)
+			result.Assurance = buildReviewAssurance(request, workflow, submission)
+		}
+		if len(result.Rejected) > 0 {
+			result.Summary.Rejected = len(result.Rejected)
+			if err := writeJSON(filepath.Join(dir, ResultFileName), result); err != nil {
+				return nil, err
+			}
+			return result, nil
+		}
+	}
 	seen := map[string]struct{}{}
 	acceptedIndexes := map[int]bool{}
 	for i, finding := range submission.Findings {
@@ -69,7 +98,173 @@ func Submit(repo, sessionID string, submission Submission) (*Result, error) {
 	if err := writeJSON(filepath.Join(dir, ResultFileName), result); err != nil {
 		return nil, err
 	}
+	if workflow != nil && len(result.Rejected) == 0 {
+		workflow.State = WorkflowComplete
+		if err := saveWorkflow(repo, workflow); err != nil {
+			return nil, err
+		}
+		result.Assurance.WorkflowState = WorkflowComplete
+		if err := writeJSON(filepath.Join(dir, ResultFileName), result); err != nil {
+			return nil, err
+		}
+	}
 	return result, nil
+}
+
+func validateDeepFinalization(request *Request, workflow *Workflow, submission Submission) []Rejection {
+	if workflow.State != WorkflowReady && workflow.State != WorkflowComplete {
+		return []Rejection{{Index: -1, Code: "phase_incomplete", Message: "complete every deep-review phase before final submission"}}
+	}
+	candidates, verdicts, err := workflowCandidatesAndVerdicts(workflow)
+	if err != nil {
+		return []Rejection{{Index: -1, Code: "workflow_artifact_invalid", Message: err.Error()}}
+	}
+	rejections := validateWorkflowEvidence(request, workflow)
+	finalized, err := workflowFinalDispositions(workflow)
+	if err != nil {
+		return append(rejections, Rejection{Index: -1, Code: "finalize_artifact_invalid", Message: err.Error()})
+	}
+	finalizedByID := map[string]CandidateDisposition{}
+	for _, disposition := range finalized {
+		finalizedByID[disposition.CandidateID] = disposition
+	}
+	dispositions := map[string]CandidateDisposition{}
+	for _, disposition := range submission.CandidateDispositions {
+		if _, ok := candidates[disposition.CandidateID]; !ok {
+			rejections = append(rejections, Rejection{Index: -1, Code: "unknown_candidate_disposition", Message: fmt.Sprintf("disposition references unknown candidate %q", disposition.CandidateID)})
+			continue
+		}
+		if _, duplicate := dispositions[disposition.CandidateID]; duplicate {
+			rejections = append(rejections, Rejection{Index: -1, Code: "duplicate_candidate_disposition", Message: fmt.Sprintf("candidate %q has multiple dispositions", disposition.CandidateID)})
+			continue
+		}
+		if disposition.Outcome != DispositionSubmit && disposition.Outcome != DispositionDrop {
+			rejections = append(rejections, Rejection{Index: -1, Code: "invalid_candidate_disposition", Message: "candidate outcome must be submit or drop"})
+		}
+		if strings.TrimSpace(disposition.Reason) == "" {
+			rejections = append(rejections, Rejection{Index: -1, Code: "missing_disposition_reason", Message: fmt.Sprintf("candidate %q requires a disposition reason", disposition.CandidateID)})
+		}
+		verdict := verdicts[disposition.CandidateID]
+		if disposition.Outcome == DispositionSubmit && verdict.Verdict == CritiqueUnsupported {
+			if strings.TrimSpace(disposition.OverrideReason) == "" || len(disposition.AdditionalEvidence) == 0 {
+				rejections = append(rejections, Rejection{Index: -1, Code: "critic_override_required", Message: fmt.Sprintf("candidate %q was rejected by the critic and requires override_reason plus additional_evidence", disposition.CandidateID)})
+			}
+		}
+		for i := range disposition.AdditionalEvidence {
+			phaseRejections := validateEvidenceRef(request, workflow, &disposition.AdditionalEvidence[i])
+			for _, rejection := range phaseRejections {
+				rejections = append(rejections, Rejection{Index: -1, Code: rejection.Code, Message: rejection.Message})
+			}
+		}
+		dispositions[disposition.CandidateID] = disposition
+		if persisted, ok := finalizedByID[disposition.CandidateID]; !ok || dispositionDigest(persisted) != dispositionDigest(disposition) {
+			rejections = append(rejections, Rejection{Index: -1, Code: "finalize_disposition_mismatch", Message: fmt.Sprintf("candidate %q disposition must match the persisted finalize phase", disposition.CandidateID)})
+		}
+	}
+	for candidateID := range candidates {
+		if _, ok := dispositions[candidateID]; !ok {
+			rejections = append(rejections, Rejection{Index: -1, Code: "missing_candidate_disposition", Message: fmt.Sprintf("resolve candidate %q as submit or drop", candidateID)})
+		}
+	}
+	findingCounts := map[string]int{}
+	for i, finding := range submission.Findings {
+		disposition, ok := dispositions[finding.CandidateID]
+		if finding.CandidateID == "" || !ok {
+			rejections = append(rejections, Rejection{Index: i, Code: "finding_candidate_missing", Message: "deep findings must reference a known candidate_id"})
+			continue
+		}
+		if disposition.Outcome != DispositionSubmit {
+			rejections = append(rejections, Rejection{Index: i, Code: "finding_candidate_dropped", Message: "finding references a dropped candidate"})
+		}
+		findingCounts[finding.CandidateID]++
+	}
+	for candidateID, disposition := range dispositions {
+		if disposition.Outcome == DispositionSubmit && findingCounts[candidateID] != 1 {
+			rejections = append(rejections, Rejection{Index: -1, Code: "candidate_finding_count", Message: fmt.Sprintf("submitted candidate %q must map to exactly one finding", candidateID)})
+		}
+	}
+	return rejections
+}
+
+func validateWorkflowEvidence(request *Request, workflow *Workflow) []Rejection {
+	rejections := make([]Rejection, 0)
+	for path, snapshot := range workflow.Evidence {
+		if prepared := preparedSnapshot(request, path); prepared != nil && !prepared.ValidateWorkspace {
+			continue
+		}
+		_, full, err := resolveRepoFile(request.Repository.Root, path)
+		if err != nil {
+			rejections = append(rejections, Rejection{Index: -1, Code: "unsafe_evidence_path", Message: err.Error()})
+			continue
+		}
+		data, err := readRegularFile(full)
+		if err != nil || contentSHA256(data) != snapshot.SHA256 {
+			rejections = append(rejections, Rejection{Index: -1, Code: "stale_evidence", Message: fmt.Sprintf("%s changed after phase evidence was recorded", path)})
+		}
+	}
+	return rejections
+}
+
+func workflowCandidatesAndVerdicts(workflow *Workflow) (map[string]Candidate, map[string]CritiqueVerdict, error) {
+	candidates := map[string]Candidate{}
+	verdicts := map[string]CritiqueVerdict{}
+	for _, task := range workflow.Tasks {
+		if task.State != PhaseSubmitted || (task.Phase != PhaseCandidates && task.Phase != PhaseCritique) {
+			continue
+		}
+		var phase PhaseSubmission
+		if err := readJSON(task.SubmissionPath, &phase); err != nil {
+			return nil, nil, err
+		}
+		if task.Phase == PhaseCandidates {
+			var payload CandidatesPayload
+			if err := json.Unmarshal(phase.Payload, &payload); err != nil {
+				return nil, nil, err
+			}
+			for _, candidate := range payload.Candidates {
+				candidates[candidate.ID] = candidate
+			}
+		} else {
+			var payload CritiquePayload
+			if err := json.Unmarshal(phase.Payload, &payload); err != nil {
+				return nil, nil, err
+			}
+			for _, verdict := range payload.Verdicts {
+				verdicts[verdict.CandidateID] = verdict
+			}
+		}
+	}
+	return candidates, verdicts, nil
+}
+
+func buildReviewAssurance(request *Request, workflow *Workflow, submission Submission) *ReviewAssurance {
+	candidates, _, _ := workflowCandidatesAndVerdicts(workflow)
+	assurance := &ReviewAssurance{
+		WorkflowState: workflow.State, CriticMode: workflow.CriticMode,
+		CommunicationMode:    request.Instructions.TokenEconomy.Mode,
+		CommunicationLevel:   request.Instructions.TokenEconomy.Level,
+		CommunicationBackend: workflow.CommunicationBackend,
+		Candidates:           len(candidates), EvidenceFiles: len(workflow.Evidence),
+	}
+	for _, task := range workflow.Tasks {
+		if task.State == PhaseSubmitted {
+			assurance.PhasesCompleted++
+		}
+	}
+	for _, disposition := range submission.CandidateDispositions {
+		if disposition.Outcome == DispositionDrop {
+			assurance.Dropped++
+		}
+		if disposition.OverrideReason != "" {
+			assurance.Overrides++
+		}
+	}
+	return assurance
+}
+
+func dispositionDigest(disposition CandidateDisposition) string {
+	data, _ := json.Marshal(disposition)
+	return string(data)
 }
 
 func validateQuestionResolutions(request *Request, submission Submission) []Rejection {

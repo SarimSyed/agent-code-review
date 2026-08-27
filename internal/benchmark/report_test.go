@@ -7,7 +7,45 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/alibaba/open-code-review/internal/delegation"
 )
+
+func TestBuildReportSeparatesCommunicationPolicyAndHostUsage(t *testing.T) {
+	run := &Run{
+		ProtocolVersion: BenchmarkProtocolVersion,
+		ID:              "run-usage",
+		TokenEconomy:    delegation.TokenEconomy{Mode: delegation.TokenEconomyCaveman, Level: delegation.CavemanFull},
+		Tasks: []Task{
+			{ID: "baseline", Arm: ArmBaseline, Usage: &Usage{InputTokens: 100, OutputTokens: 20, TotalTokens: 120}},
+			{ID: "acr", Arm: ArmACR, Usage: &Usage{InputTokens: 200, OutputTokens: 40, TotalTokens: 240}, ReviewAssurance: &delegation.ReviewAssurance{PhasesCompleted: 5, Candidates: 2, Dropped: 1, Overrides: 1, EvidenceFiles: 3, CriticMode: delegation.CriticIndependent}},
+		},
+	}
+	report := BuildReport(run)
+	if report.TokenEconomy != run.TokenEconomy {
+		t.Fatalf("report policy = %#v", report.TokenEconomy)
+	}
+	if !report.BaselineUsage.Available || report.BaselineUsage.TotalTokens != 120 || !report.ACRUsage.Available || report.ACRUsage.TotalTokens != 240 {
+		t.Fatalf("usage aggregates = baseline %#v, ACR %#v", report.BaselineUsage, report.ACRUsage)
+	}
+	if report.ACRProcess.Sessions != 1 || report.ACRProcess.PhaseCheckpoints != 5 || report.ACRProcess.Candidates != 2 || report.ACRProcess.CriticModes[delegation.CriticIndependent] != 1 {
+		t.Fatalf("ACR process aggregate = %#v", report.ACRProcess)
+	}
+	markdown := RenderReportMarkdown(report)
+	if !strings.Contains(markdown, "Caveman") || !strings.Contains(markdown, "240") || !strings.Contains(markdown, "host-reported") || !strings.Contains(markdown, "Phase checkpoints") {
+		t.Fatalf("Markdown omits policy or usage:\n%s", markdown)
+	}
+}
+
+func TestBuildReportMarksMissingTokenUsageUnavailable(t *testing.T) {
+	report := BuildReport(&Run{ProtocolVersion: BenchmarkProtocolVersion, ID: "run-no-usage"})
+	if report.BaselineUsage.Available || report.ACRUsage.Available {
+		t.Fatalf("missing usage reported available: %#v", report)
+	}
+	if !strings.Contains(RenderReportMarkdown(report), "unavailable") {
+		t.Fatalf("Markdown does not label missing usage")
+	}
+}
 
 func TestBuildReportRetainsPerCaseEvidenceAndBootstrapsTenPairs(t *testing.T) {
 	run := &Run{ProtocolVersion: BenchmarkProtocolVersion, ID: "run-1", Seed: 7}

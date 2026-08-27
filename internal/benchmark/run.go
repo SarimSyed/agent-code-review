@@ -48,6 +48,7 @@ type PrepareRunOptions struct {
 	Repository          string
 	RepositoryOverrides map[string]string
 	CacheDir            string
+	TokenEconomy        delegation.TokenEconomy
 }
 
 type Selection struct {
@@ -58,17 +59,18 @@ type Selection struct {
 }
 
 type Run struct {
-	ProtocolVersion string          `json:"protocol_version"`
-	ID              string          `json:"id"`
-	CreatedAt       time.Time       `json:"created_at"`
-	Dataset         DatasetMetadata `json:"dataset"`
-	Seed            int64           `json:"seed"`
-	Trials          int             `json:"trials"`
-	Workspace       string          `json:"workspace"`
-	Cases           []Case          `json:"cases"`
-	Tasks           []Task          `json:"tasks"`
-	Evaluations     []Evaluation    `json:"evaluations,omitempty"`
-	SetupFailures   []SetupFailure  `json:"setup_failures,omitempty"`
+	ProtocolVersion string                  `json:"protocol_version"`
+	ID              string                  `json:"id"`
+	CreatedAt       time.Time               `json:"created_at"`
+	Dataset         DatasetMetadata         `json:"dataset"`
+	Seed            int64                   `json:"seed"`
+	Trials          int                     `json:"trials"`
+	Workspace       string                  `json:"workspace"`
+	Cases           []Case                  `json:"cases"`
+	Tasks           []Task                  `json:"tasks"`
+	Evaluations     []Evaluation            `json:"evaluations,omitempty"`
+	SetupFailures   []SetupFailure          `json:"setup_failures,omitempty"`
+	TokenEconomy    delegation.TokenEconomy `json:"token_economy"`
 }
 
 type SetupFailure struct {
@@ -77,27 +79,30 @@ type SetupFailure struct {
 }
 
 type Task struct {
-	ID             string    `json:"id"`
-	CaseID         string    `json:"case_id"`
-	Trial          int       `json:"trial"`
-	Arm            string    `json:"arm"`
-	State          string    `json:"state"`
-	BaseSHA        string    `json:"base_sha"`
-	HeadSHA        string    `json:"head_sha"`
-	CheckoutPath   string    `json:"checkout_path"`
-	PromptPath     string    `json:"prompt_path"`
-	ReviewSession  string    `json:"review_session,omitempty"`
-	Worker         string    `json:"worker,omitempty"`
-	ClaimedAt      time.Time `json:"claimed_at,omitempty"`
-	LeaseExpiresAt time.Time `json:"lease_expires_at,omitempty"`
-	Executor       Executor  `json:"executor,omitempty"`
-	SubmissionPath string    `json:"submission_path,omitempty"`
-	SubmissionSHA  string    `json:"submission_sha256,omitempty"`
-	SourceTreeSHA  string    `json:"source_tree_sha256"`
-	Rejections     []Repair  `json:"rejections,omitempty"`
-	JudgeBatchID   string    `json:"judge_batch_id,omitempty"`
-	JudgeRound     int       `json:"judge_round,omitempty"`
-	PairIDs        []string  `json:"pair_ids,omitempty"`
+	ID              string                      `json:"id"`
+	CaseID          string                      `json:"case_id"`
+	Trial           int                         `json:"trial"`
+	Arm             string                      `json:"arm"`
+	State           string                      `json:"state"`
+	BaseSHA         string                      `json:"base_sha"`
+	HeadSHA         string                      `json:"head_sha"`
+	CheckoutPath    string                      `json:"checkout_path"`
+	PromptPath      string                      `json:"prompt_path"`
+	ReviewSession   string                      `json:"review_session,omitempty"`
+	Worker          string                      `json:"worker,omitempty"`
+	ClaimedAt       time.Time                   `json:"claimed_at,omitempty"`
+	LeaseExpiresAt  time.Time                   `json:"lease_expires_at,omitempty"`
+	Executor        Executor                    `json:"executor,omitempty"`
+	SubmissionPath  string                      `json:"submission_path,omitempty"`
+	SubmissionSHA   string                      `json:"submission_sha256,omitempty"`
+	SourceTreeSHA   string                      `json:"source_tree_sha256"`
+	Rejections      []Repair                    `json:"rejections,omitempty"`
+	JudgeBatchID    string                      `json:"judge_batch_id,omitempty"`
+	JudgeRound      int                         `json:"judge_round,omitempty"`
+	PairIDs         []string                    `json:"pair_ids,omitempty"`
+	Communication   *delegation.Communication   `json:"communication,omitempty"`
+	Usage           *Usage                      `json:"usage,omitempty"`
+	ReviewAssurance *delegation.ReviewAssurance `json:"review_assurance,omitempty"`
 }
 
 type Evaluation struct {
@@ -118,12 +123,21 @@ type Executor struct {
 }
 
 type TaskSubmission struct {
-	ProtocolVersion string     `json:"protocol_version"`
-	RunID           string     `json:"run_id"`
-	TaskID          string     `json:"task_id"`
-	Executor        Executor   `json:"executor"`
-	Findings        []Finding  `json:"findings,omitempty"`
-	Judgments       []Judgment `json:"judgments,omitempty"`
+	ProtocolVersion string                    `json:"protocol_version"`
+	RunID           string                    `json:"run_id"`
+	TaskID          string                    `json:"task_id"`
+	Executor        Executor                  `json:"executor"`
+	Findings        []Finding                 `json:"findings,omitempty"`
+	Judgments       []Judgment                `json:"judgments,omitempty"`
+	Communication   *delegation.Communication `json:"communication,omitempty"`
+	Usage           *Usage                    `json:"usage,omitempty"`
+}
+
+// Usage is optional host-reported token accounting. ACR never estimates it.
+type Usage struct {
+	InputTokens  int `json:"input_tokens"`
+	OutputTokens int `json:"output_tokens"`
+	TotalTokens  int `json:"total_tokens"`
 }
 
 type Judgment struct {
@@ -172,6 +186,10 @@ func PrepareRun(ctx context.Context, workspace string, options PrepareRunOptions
 	if options.Trials < 1 {
 		return nil, fmt.Errorf("--trials must be at least 1")
 	}
+	tokenEconomy, err := delegation.NormalizeTokenEconomy(options.TokenEconomy)
+	if err != nil {
+		return nil, err
+	}
 	root, err := filepath.Abs(workspace)
 	if err != nil {
 		return nil, fmt.Errorf("resolve benchmark workspace: %w", err)
@@ -183,7 +201,7 @@ func PrepareRun(ctx context.Context, workspace string, options PrepareRunOptions
 	run := &Run{
 		ProtocolVersion: BenchmarkProtocolVersion, ID: runID, CreatedAt: time.Now().UTC(),
 		Dataset: manifest.Dataset, Seed: options.Seed, Trials: options.Trials, Workspace: root,
-		Cases: selected, Tasks: make([]Task, 0, len(selected)*options.Trials*2),
+		Cases: selected, Tasks: make([]Task, 0, len(selected)*options.Trials*2), TokenEconomy: tokenEconomy,
 	}
 	runRoot := RunDir(root, runID)
 	if err := os.MkdirAll(filepath.Join(runRoot, "tasks"), 0o700); err != nil {
@@ -217,7 +235,7 @@ func PrepareRun(ctx context.Context, workspace string, options PrepareRunOptions
 			pair := make([]Task, 0, 2)
 			pairFailed := false
 			for _, arm := range []string{ArmBaseline, ArmACR} {
-				task, taskErr := prepareReviewTask(ctx, runRoot, repository, benchmarkCase, trial, arm)
+				task, taskErr := prepareReviewTask(ctx, runRoot, repository, benchmarkCase, trial, arm, tokenEconomy)
 				if taskErr != nil {
 					run.SetupFailures = append(run.SetupFailures, SetupFailure{CaseID: benchmarkCase.ID, Message: taskErr.Error()})
 					pairFailed = true
@@ -274,7 +292,7 @@ func SelectCases(cases []Case, selection Selection) []Case {
 	return selected
 }
 
-func prepareReviewTask(ctx context.Context, runRoot, repository string, benchmarkCase Case, trial int, arm string) (Task, error) {
+func prepareReviewTask(ctx context.Context, runRoot, repository string, benchmarkCase Case, trial int, arm string, tokenEconomy delegation.TokenEconomy) (Task, error) {
 	taskID := fmt.Sprintf("%s-t%02d-%s", benchmarkCase.ID, trial, arm)
 	taskRoot := filepath.Join(runRoot, "tasks", taskID)
 	checkout := filepath.Join(taskRoot, "checkout")
@@ -298,7 +316,7 @@ func prepareReviewTask(ctx context.Context, runRoot, repository string, benchmar
 	if arm == ArmACR {
 		request, err := delegation.Build(ctx, delegation.BuildOptions{
 			RepoDir: checkout, From: benchmarkCase.BaseSHA, To: benchmarkCase.HeadSHA,
-			Profile: delegation.ReviewProfileDeep,
+			Profile: delegation.ReviewProfileDeep, TokenEconomy: tokenEconomy,
 		})
 		if err != nil {
 			return Task{}, fmt.Errorf("prepare ACR task %s: %w", taskID, err)
@@ -308,9 +326,9 @@ func prepareReviewTask(ctx context.Context, runRoot, repository string, benchmar
 		if err != nil {
 			return Task{}, fmt.Errorf("render ACR prompt %s: %w", taskID, err)
 		}
-		prompt += benchmarkSubmissionInstructions(task)
+		prompt += benchmarkSubmissionInstructions(task, tokenEconomy)
 	} else {
-		prompt = baselinePrompt(task)
+		prompt = baselinePrompt(task, tokenEconomy)
 	}
 	if err := os.WriteFile(task.PromptPath, []byte(prompt), 0o600); err != nil {
 		return Task{}, fmt.Errorf("write task prompt %s: %w", taskID, err)
@@ -318,18 +336,28 @@ func prepareReviewTask(ctx context.Context, runRoot, repository string, benchmar
 	return task, nil
 }
 
-func baselinePrompt(task Task) string {
+func baselinePrompt(task Task, tokenEconomy delegation.TokenEconomy) string {
+	if tokenEconomy.Mode == delegation.TokenEconomyCaveman {
+		return fmt.Sprintf(`# Independent baseline review
+
+Use installed caveman skill level %s; else compact fallback. Keep paths, symbols, commands, negation, numbers, evidence exact. Same review depth. Review %s..%s at %s. Find introduced correctness/security/performance/reliability bugs. Inspect callers/callees/tests/invariants. No file edits. No ACR guidance/results.
+`, tokenEconomy.Level, task.BaseSHA, task.HeadSHA, task.CheckoutPath) + benchmarkSubmissionInstructions(task, tokenEconomy)
+	}
 	return fmt.Sprintf(`# Independent baseline code review
 
 Review the changes between base %s and head %s in the repository at %s.
 Find concrete correctness, security, performance, or reliability defects introduced by the change. Inspect relevant callers, callees, tests, and invariants. Do not modify files and do not use ACR guidance or another review result.
-`, task.BaseSHA, task.HeadSHA, task.CheckoutPath) + benchmarkSubmissionInstructions(task)
+`, task.BaseSHA, task.HeadSHA, task.CheckoutPath) + benchmarkSubmissionInstructions(task, tokenEconomy)
 }
 
-func benchmarkSubmissionInstructions(task Task) string {
+func benchmarkSubmissionInstructions(task Task, tokenEconomy delegation.TokenEconomy) string {
+	communication := "communication is optional for normal mode"
+	if tokenEconomy.Mode == delegation.TokenEconomyCaveman {
+		communication = fmt.Sprintf("communication {mode:%q, level:%q, backend:\"skill\"|\"compact_fallback\"} is required", tokenEconomy.Mode, tokenEconomy.Level)
+	}
 	return fmt.Sprintf(`
-Return one JSON object with protocol_version "1", run_id supplied by the orchestrator, task_id %q, executor {host, model, context_id}, and findings. Each finding may contain title, description, explanation, evidence, file, start_line, end_line, severity, and confidence. Use an empty findings array when no concrete defect is found.
-`, task.ID)
+Return one JSON object with protocol_version "1", run_id supplied by the orchestrator, task_id %q, executor {host, model, context_id}, and findings; %s. Add usage {input_tokens, output_tokens, total_tokens} only when the host exposes exact counts. Each finding may contain title, description, explanation, evidence, file, start_line, end_line, severity, and confidence. Use an empty findings array when no concrete defect is found.
+`, task.ID, communication)
 }
 
 func orderTasks(tasks []Task, seed int64) {
@@ -476,6 +504,15 @@ func SubmitTask(workspace, runID, taskID string, submission TaskSubmission) (*Ta
 			return fmt.Errorf("write benchmark submission: %w", err)
 		}
 		task.Executor = submission.Executor
+		task.Communication = submission.Communication
+		task.Usage = submission.Usage
+		if task.Arm == ArmACR {
+			acrResult, loadErr := delegation.LoadResult(task.CheckoutPath, task.ReviewSession)
+			if loadErr != nil {
+				return loadErr
+			}
+			task.ReviewAssurance = acrResult.Assurance
+		}
 		task.SubmissionPath = path
 		task.SubmissionSHA = digestString
 		task.State = TaskSubmitted
@@ -499,6 +536,22 @@ func validateTaskSubmission(run *Run, task Task, submission TaskSubmission) erro
 	if strings.TrimSpace(submission.Executor.Host) == "" || strings.TrimSpace(submission.Executor.Model) == "" || strings.TrimSpace(submission.Executor.ContextID) == "" {
 		return fmt.Errorf("executor host, model, and context_id are required")
 	}
+	communicationPolicy := run.TokenEconomy
+	if task.Arm == ArmJudge {
+		communicationPolicy = delegation.TokenEconomy{Mode: delegation.TokenEconomyNormal}
+	}
+	if err := validateBenchmarkCommunication(communicationPolicy, submission.Communication); err != nil {
+		return err
+	}
+	if submission.Usage != nil {
+		usage := submission.Usage
+		if usage.InputTokens < 0 || usage.OutputTokens < 0 || usage.TotalTokens < 0 {
+			return fmt.Errorf("usage token counts cannot be negative")
+		}
+		if usage.InputTokens+usage.OutputTokens > 0 && usage.TotalTokens != usage.InputTokens+usage.OutputTokens {
+			return fmt.Errorf("usage total_tokens must equal input_tokens plus output_tokens")
+		}
+	}
 	for _, other := range run.Tasks {
 		if other.ID == task.ID || other.CaseID != task.CaseID || other.Trial != task.Trial || other.SubmissionSHA == "" {
 			continue
@@ -511,6 +564,11 @@ func validateTaskSubmission(run *Run, task Task, submission TaskSubmission) erro
 			if other.Executor.Host != submission.Executor.Host || other.Executor.Model != submission.Executor.Model {
 				return fmt.Errorf("paired reviews and judges must use the same model and host")
 			}
+		}
+	}
+	if task.Arm == ArmACR {
+		if err := validateCompletedACRReview(task, submission.Findings, submission.Communication); err != nil {
+			return err
 		}
 	}
 	if task.Arm == ArmJudge {
@@ -579,6 +637,57 @@ func validateTaskSubmission(run *Run, task Task, submission TaskSubmission) erro
 	return nil
 }
 
+func validateCompletedACRReview(task Task, submitted []Finding, communication *delegation.Communication) error {
+	result, err := delegation.LoadResult(task.CheckoutPath, task.ReviewSession)
+	if err != nil || result.Assurance == nil || result.Assurance.WorkflowState != delegation.WorkflowComplete || len(result.Rejected) != 0 {
+		return fmt.Errorf("ACR review is incomplete or not validated")
+	}
+	if len(result.Findings) != len(submitted) {
+		return fmt.Errorf("benchmark findings do not match validated ACR findings")
+	}
+	if communication != nil && (communication.Mode != result.Assurance.CommunicationMode || communication.Level != result.Assurance.CommunicationLevel || communication.Backend != result.Assurance.CommunicationBackend) {
+		return fmt.Errorf("benchmark communication does not match validated ACR review")
+	}
+	used := make([]bool, len(submitted))
+	for _, validated := range result.Findings {
+		matched := false
+		for index, finding := range submitted {
+			if used[index] || filepath.ToSlash(finding.File) != filepath.ToSlash(validated.File) || finding.StartLine != validated.StartLine || finding.EndLine != validated.EndLine {
+				continue
+			}
+			if strings.TrimSpace(finding.Explanation) != strings.TrimSpace(validated.Explanation) {
+				continue
+			}
+			used[index] = true
+			matched = true
+			break
+		}
+		if !matched {
+			return fmt.Errorf("benchmark findings do not match validated ACR findings")
+		}
+	}
+	return nil
+}
+
+func validateBenchmarkCommunication(policy delegation.TokenEconomy, communication *delegation.Communication) error {
+	if policy.Mode != delegation.TokenEconomyCaveman {
+		if communication != nil && communication.Mode != "" && communication.Mode != delegation.TokenEconomyNormal {
+			return fmt.Errorf("communication mode does not match benchmark policy")
+		}
+		return nil
+	}
+	if communication == nil {
+		return fmt.Errorf("caveman benchmark submissions require communication metadata")
+	}
+	if communication.Mode != policy.Mode || communication.Level != policy.Level {
+		return fmt.Errorf("communication mode and level do not match benchmark policy")
+	}
+	if communication.Backend != delegation.CommunicationSkill && communication.Backend != delegation.CommunicationFallback {
+		return fmt.Errorf("communication backend must be skill or compact_fallback")
+	}
+	return nil
+}
+
 func repairForError(taskID string, err error) *RepairError {
 	message := err.Error()
 	code := "invalid_submission"
@@ -595,6 +704,12 @@ func repairForError(taskID string, err error) *RepairError {
 		code = "model_mismatch"
 	case strings.Contains(message, "judgment"):
 		code = "invalid_judgment"
+	case strings.Contains(message, "ACR review is incomplete"):
+		code = "acr_review_incomplete"
+	case strings.Contains(message, "validated ACR findings"):
+		code = "acr_result_mismatch"
+	case strings.Contains(message, "communication"):
+		code = "communication_mismatch"
 	}
 	return &RepairError{ProtocolVersion: BenchmarkProtocolVersion, TaskID: taskID, Code: code, Message: message}
 }

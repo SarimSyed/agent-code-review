@@ -1,9 +1,9 @@
 {
   "name": "agent-code-review",
-  "version": "1.4.0",
-  "description": "Amplify the active Codex model with focused risk detection and validated deep review.",
+  "version": "1.5.0",
+  "description": "Amplify the active Codex model with enforced phased review and blinded critique.",
   "author": {
-    "name": "Agent Code Review Contributors"
+    "name": "Sarim Syed"
   },
   "homepage": "https://github.com/SarimSyed/agent-code-review",
   "repository": "https://github.com/SarimSyed/agent-code-review",
@@ -18,8 +18,8 @@
   "interface": {
     "displayName": "Agent Code Review",
     "shortDescription": "Run independent deep reviews with the active Codex model.",
-    "longDescription": "Surfaces risky async, API-contract, and lifecycle changes for the active Codex model to verify, then validates and renders its findings without a separate API key.",
-    "developerName": "Agent Code Review Contributors",
+    "longDescription": "Enforces intent, impact, candidate, blinded critique, and finalize phases for the active Codex model, then validates and renders findings without a separate API key.",
+    "developerName": "Sarim Syed",
     "category": "Developer Tools",
     "capabilities": [
       "Read"

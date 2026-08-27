@@ -9,7 +9,8 @@ package delegation
 import "time"
 
 const (
-	ProtocolVersion       = "1"
+	ProtocolVersion       = "2"
+	LegacyProtocolVersion = "1"
 	ModeDiff              = "diff"
 	ModeScan              = "scan"
 	ReviewProfileStandard = "standard"
@@ -17,14 +18,27 @@ const (
 	RequestFileName       = "request.json"
 	FindingsFileName      = "findings.json"
 	ResultFileName        = "result.json"
+	WorkflowFileName      = "workflow.json"
+)
+
+const (
+	TokenEconomyNormal    = "normal"
+	TokenEconomyCaveman   = "caveman"
+	CavemanLite           = "lite"
+	CavemanFull           = "full"
+	CavemanUltra          = "ultra"
+	CommunicationNormal   = "normal"
+	CommunicationSkill    = "skill"
+	CommunicationFallback = "compact_fallback"
 )
 
 type PrepareInput struct {
-	Mode       string
-	Revision   string
-	Background string
-	Profile    string
-	Units      []PreparedUnit
+	Mode         string
+	Revision     string
+	Background   string
+	Profile      string
+	TokenEconomy TokenEconomy
+	Units        []PreparedUnit
 }
 
 type PreparedUnit struct {
@@ -53,8 +67,9 @@ type Request struct {
 }
 
 type Repository struct {
-	Root     string `json:"root"`
-	Revision string `json:"revision,omitempty"`
+	Root                string `json:"root"`
+	Revision            string `json:"revision,omitempty"`
+	TrackedSourceSHA256 string `json:"tracked_source_sha256,omitempty"`
 }
 
 type Instructions struct {
@@ -65,6 +80,24 @@ type Instructions struct {
 	AllowedCategories []string     `json:"allowed_categories"`
 	ReviewProfile     string       `json:"review_profile"`
 	RequiredPasses    []ReviewPass `json:"required_passes"`
+	TokenEconomy      TokenEconomy `json:"token_economy"`
+}
+
+type TokenEconomy struct {
+	Mode  string `json:"mode"`
+	Level string `json:"level,omitempty"`
+}
+
+type Executor struct {
+	Host      string `json:"host"`
+	Model     string `json:"model"`
+	ContextID string `json:"context_id"`
+}
+
+type Communication struct {
+	Mode    string `json:"mode"`
+	Level   string `json:"level,omitempty"`
+	Backend string `json:"backend"`
 }
 
 // ReviewPass describes a distinct review activity the host agent must
@@ -152,10 +185,19 @@ type FileSnapshot struct {
 }
 
 type Submission struct {
-	ProtocolVersion     string               `json:"protocol_version"`
-	SessionID           string               `json:"session_id"`
-	QuestionResolutions []QuestionResolution `json:"question_resolutions,omitempty"`
-	Findings            []Finding            `json:"findings"`
+	ProtocolVersion       string                 `json:"protocol_version"`
+	SessionID             string                 `json:"session_id"`
+	QuestionResolutions   []QuestionResolution   `json:"question_resolutions,omitempty"`
+	CandidateDispositions []CandidateDisposition `json:"candidate_dispositions,omitempty"`
+	Findings              []Finding              `json:"findings"`
+}
+
+type CandidateDisposition struct {
+	CandidateID        string        `json:"candidate_id"`
+	Outcome            string        `json:"outcome"`
+	Reason             string        `json:"reason"`
+	OverrideReason     string        `json:"override_reason,omitempty"`
+	AdditionalEvidence []EvidenceRef `json:"additional_evidence,omitempty"`
 }
 
 type QuestionResolution struct {
@@ -166,6 +208,7 @@ type QuestionResolution struct {
 }
 
 type Finding struct {
+	CandidateID  string  `json:"candidate_id,omitempty"`
 	UnitID       string  `json:"unit_id"`
 	File         string  `json:"file"`
 	StartLine    int     `json:"start_line"`
@@ -185,12 +228,27 @@ type Rejection struct {
 }
 
 type Result struct {
-	ProtocolVersion     string               `json:"protocol_version"`
-	SessionID           string               `json:"session_id"`
-	QuestionResolutions []QuestionResolution `json:"question_resolutions,omitempty"`
-	Findings            []Finding            `json:"findings"`
-	Rejected            []Rejection          `json:"rejected"`
-	Summary             ResultSummary        `json:"summary"`
+	ProtocolVersion       string                 `json:"protocol_version"`
+	SessionID             string                 `json:"session_id"`
+	QuestionResolutions   []QuestionResolution   `json:"question_resolutions,omitempty"`
+	CandidateDispositions []CandidateDisposition `json:"candidate_dispositions,omitempty"`
+	Findings              []Finding              `json:"findings"`
+	Rejected              []Rejection            `json:"rejected"`
+	Summary               ResultSummary          `json:"summary"`
+	Assurance             *ReviewAssurance       `json:"assurance,omitempty"`
+}
+
+type ReviewAssurance struct {
+	WorkflowState        string `json:"workflow_state"`
+	CriticMode           string `json:"critic_mode,omitempty"`
+	CommunicationMode    string `json:"communication_mode"`
+	CommunicationLevel   string `json:"communication_level,omitempty"`
+	CommunicationBackend string `json:"communication_backend,omitempty"`
+	PhasesCompleted      int    `json:"phases_completed"`
+	Candidates           int    `json:"candidates"`
+	Dropped              int    `json:"dropped"`
+	Overrides            int    `json:"overrides"`
+	EvidenceFiles        int    `json:"evidence_files"`
 }
 
 type ResultSummary struct {

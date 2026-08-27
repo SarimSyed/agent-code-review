@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/SarimSyed/agent-code-review/schemas/review-workflow-v2.json",
+  "type": "object",
+  "required": ["protocol_version", "session_id", "state", "tasks"],
+  "properties": {
+    "protocol_version": { "const": "2" },
+    "session_id": { "type": "string", "minLength": 1 },
+    "state": { "enum": ["active", "ready", "complete"] },
+    "critic_mode": { "enum": ["independent", "same_context", "not_required"] },
+    "communication_backend": { "enum": ["normal", "skill", "compact_fallback"] },
+    "tasks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "unit_id", "phase", "state"],
+        "properties": {
+          "id": { "type": "string" },
+          "unit_id": { "type": "string" },
+          "phase": { "enum": ["intent", "impact", "candidates", "critique", "finalize"] },
+          "state": { "enum": ["queued", "claimed", "submitted"] }
+        }
+      }
+    },
+    "evidence": { "type": "object" }
+  }
+}

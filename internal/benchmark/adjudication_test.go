@@ -17,6 +17,9 @@ func TestReviewerSubmissionsCreateBlindedJudgesAndTiebreaker(t *testing.T) {
 	})
 	for _, arm := range []string{ArmBaseline, ArmACR} {
 		task := taskByArm(t, run, arm)
+		if arm == ArmACR {
+			completeBenchmarkACRReview(t, task, []Finding{{Title: "Guest access", Explanation: "Guests pass the role check.", File: "review.go", StartLine: 3, EndLine: 3}})
+		}
 		submission := TaskSubmission{
 			ProtocolVersion: BenchmarkProtocolVersion, RunID: run.ID, TaskID: task.ID,
 			Executor: Executor{Host: "codex", Model: "sol", ContextID: "context-" + arm},
@@ -110,6 +113,9 @@ func TestStrongMatchesCompleteWithoutJudgeTasks(t *testing.T) {
 	})
 	for _, arm := range []string{ArmBaseline, ArmACR} {
 		task := taskByArm(t, run, arm)
+		if arm == ArmACR {
+			completeBenchmarkACRReview(t, task, []Finding{{Title: "Wrong return value", Explanation: "Value returns two instead of one.", File: "review.go", StartLine: 3, EndLine: 3}})
+		}
 		_, err := SubmitTask(workspace, run.ID, task.ID, TaskSubmission{
 			ProtocolVersion: BenchmarkProtocolVersion, RunID: run.ID, TaskID: task.ID,
 			Executor: Executor{Host: "codex", Model: "sol", ContextID: "context-" + arm},

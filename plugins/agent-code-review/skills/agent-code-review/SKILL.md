@@ -1,21 +1,55 @@
 ---
 name: agent-code-review
-description: Review workspace changes, branches, commits, files, or directories with the local acr CLI while the active coding agent performs all LLM reasoning. Use when the user asks for an ACR review or a provider-free structured code review.
+description: Review workspace changes, branches, commits, files, or directories with the local acr CLI while the active coding agent performs all reasoning. Use for ACR reviews or provider-free, phased code review.
 license: Apache-2.0
 metadata:
   author: agent-code-review contributors
-  version: "1.4.0"
+  version: "1.5.0"
 ---
 
 # Agent Code Review
 
-Use `acr` as an evidence-driven, independent code-review workflow. `acr` performs file selection, rule resolution, snapshotting, validation, and rendering; it never supplies or calls a model.
+Use `acr` to enforce evidence-backed review phases. The active host model reasons; `acr` selects code, freezes evidence, controls barriers, validates results, and renders Markdown. Never request a model API key.
 
-1. Run `acr review prepare --profile deep` for workspace changes, adding `--from/--to`, `--commit`, or `--path` when requested. Use `--profile standard` only for an explicitly requested lightweight review.
-2. If this task also authored or fixed the change, run `acr review handoff --session <id>` and use its prompt in a separate reviewer task or host subagent when available. Do not reuse conclusions from the author task. If this task was opened solely to review the change and has no authoring context, it is already independent; review directly rather than creating another task. If the host cannot launch a separate reviewer, disclose that limitation.
-3. Run `acr review brief --session <id>`, then `acr review draft --session <id>`. The draft supplies the exact non-overwriting submission form, so do not print the raw packet or inspect older sessions to rediscover its schema. Treat each focused risk question as a required investigation, not as a presumed defect. Inspect every listed file plus the relevant callee/callers and tests. Complete the invariants, dependency-order, API-contract, lifecycle, verification, and critique passes.
-4. Fill `question_resolutions` and `findings` in the draft. Resolve every question exactly once as `finding` with a zero-based `finding_index`, or `no_finding`; include concrete evidence either way. Use only categories from the brief and use `bug` for correctness defects. Findings about removals may use the nearest target-side anchor listed by the brief. An empty findings array is valid only when every question is resolved as `no_finding`.
-5. Run `acr review submit --session <id> --input <findings_path> --render`. Rejected submissions return JSON; repair them from their error codes and rerun the same command at most once. Successful submission emits the complete Markdown report with one narrowly scoped repair prompt per finding by default.
-6. Present the successful command output directly. Never stop at a validation summary, provide a render command as a next step, or ask the user to generate the report. Add `--fix-prompt combined` only when the user requests one prompt for all findings.
+## Run the review
 
-The active host model performs all reasoning. Never configure or request a provider API key. Do not modify source files unless the user separately requests fixes. This workflow improves evidence and independence, but cannot guarantee a model stronger than the host reviewer.
+1. Verify `acr version`. Prepare the requested target. Deep is the default; use standard only when explicitly requested:
+
+   ```bash
+   acr review prepare --profile deep
+   acr review prepare --profile deep --from <base> --to <target>
+   acr review prepare --profile deep --commit <sha>
+   acr review prepare --profile deep --path <file-or-directory>
+   ```
+
+   When the user requests token economy, add `--caveman` and optional `--caveman-level lite|full|ultra`. If the `caveman` skill is installed, invoke it at that intensity and record phase communication backend `skill`; otherwise obey the compact prompt and record `compact_fallback`. Compression must not reduce inspection, evidence, or critique.
+
+2. For deep review, loop until `acr review phase status --session <id>` reports `ready`:
+
+   ```bash
+   acr review phase next --session <id> --worker <worker> --format json
+   # Inspect code and fill the returned phase input file.
+   acr review phase submit --session <id> --task <task-id> --input <phase-input>
+   ```
+
+   Complete barriers in order: `intent`, `impact`, `candidates`, `critique`, `finalize`. Keep the same host, model label, and opaque context ID for intent, impact, candidates, and finalize. Inspect every unit and answer every deterministic risk question. Candidate IDs must link known invariants/questions, anchor changed lines, and cite exact evidence. Empty candidate sets need explicit coverage.
+
+3. Critique every candidate blind to primary identity and confidence. Use the same host/model in a fresh context ID when the host supports an isolated reviewer task or subagent. Return that task's phase JSON to the orchestrator for submission, then resume the primary context for finalize. If isolation is unavailable, use the primary context with `critic_mode: "same_context"`; never label it independent. Units without candidates use `critic_mode: "not_required"`.
+
+4. After finalize, create the final transport:
+
+   ```bash
+   acr review draft --session <id>
+   ```
+
+   Preserve its candidate dispositions. Add exactly one finding for each `submit` disposition and none for `drop`. Every finding needs `candidate_id`, unit, safe relative path, changed-line range, allowed severity/category, clear explanation/evidence, and confidence. Resolve each generated question exactly once as `finding` with zero-based `finding_index`, or `no_finding`, with concrete evidence.
+
+5. Validate and render immediately:
+
+   ```bash
+   acr review submit --session <id> --input <findings-path> --render
+   ```
+
+   Repair machine-readable rejection JSON once. On success, present the emitted Markdown directly; never leave a render command for the user. Per-finding fix prompts are default; use `--fix-prompt combined` only when requested.
+
+Standard and protocol-1 sessions use the legacy brief/draft/submit flow. Review is read-only. Do not modify source unless the user separately asks to fix validated findings.

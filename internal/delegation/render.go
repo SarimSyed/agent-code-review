@@ -59,6 +59,22 @@ func RenderMarkdownWithOptions(result Result, options RenderMarkdownOptions) (st
 		}
 		out.WriteString("\n")
 	}
+	if result.Assurance != nil {
+		out.WriteString("## Review assurance\n\n")
+		fmt.Fprintf(&out, "- Workflow: **%s** with %d phase checkpoints completed.\n", result.Assurance.WorkflowState, result.Assurance.PhasesCompleted)
+		if result.Assurance.CriticMode != "" {
+			fmt.Fprintf(&out, "- Critic: **%s**.\n", strings.ReplaceAll(result.Assurance.CriticMode, "_", " "))
+		}
+		fmt.Fprintf(&out, "- Candidates: %d total, %d dropped, %d critic overrides.\n", result.Assurance.Candidates, result.Assurance.Dropped, result.Assurance.Overrides)
+		fmt.Fprintf(&out, "- Evidence: %d frozen files. Communication: **%s**", result.Assurance.EvidenceFiles, result.Assurance.CommunicationMode)
+		if result.Assurance.CommunicationLevel != "" {
+			fmt.Fprintf(&out, " (%s)", result.Assurance.CommunicationLevel)
+		}
+		if result.Assurance.CommunicationBackend != "" {
+			fmt.Fprintf(&out, " via %s", result.Assurance.CommunicationBackend)
+		}
+		out.WriteString(".\n\n")
+	}
 	noun := "findings"
 	if result.Summary.Accepted == 1 {
 		noun = "finding"

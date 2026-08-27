@@ -15,7 +15,179 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/alibaba/open-code-review/internal/delegation"
 )
+
+func TestPrepareRunAppliesCavemanEquallyToBothArms(t *testing.T) {
+	repo, baseSHA, headSHA := benchmarkGitRepository(t)
+	workspace := t.TempDir()
+	manifest := Manifest{
+		ProtocolVersion: BenchmarkProtocolVersion,
+		Dataset:         DatasetMetadata{ID: "fixture", Version: "1"},
+		Cases: []Case{{
+			ID: "case-1", Repository: repo, PRURL: "https://github.com/example/project/pull/1",
+			BaseSHA: baseSHA, HeadSHA: headSHA,
+		}},
+	}
+	manifestPath := filepath.Join(workspace, "manifest.json")
+	if err := SaveManifest(manifestPath, manifest); err != nil {
+		t.Fatalf("SaveManifest: %v", err)
+	}
+
+	run, err := PrepareRun(context.Background(), workspace, PrepareRunOptions{
+		DatasetPath: manifestPath, PRURL: manifest.Cases[0].PRURL,
+		RepositoryOverrides: map[string]string{"case-1": repo},
+		TokenEconomy:        delegation.TokenEconomy{Mode: delegation.TokenEconomyCaveman, Level: delegation.CavemanUltra},
+	})
+	if err != nil {
+		t.Fatalf("PrepareRun: %v", err)
+	}
+	if run.TokenEconomy.Mode != delegation.TokenEconomyCaveman || run.TokenEconomy.Level != delegation.CavemanUltra {
+		t.Fatalf("run token policy = %#v", run.TokenEconomy)
+	}
+	for _, task := range run.Tasks {
+		prompt, readErr := os.ReadFile(task.PromptPath)
+		if readErr != nil {
+			t.Fatalf("read %s prompt: %v", task.Arm, readErr)
+		}
+		if !strings.Contains(string(prompt), "caveman") || !strings.Contains(string(prompt), delegation.CavemanUltra) {
+			t.Fatalf("%s prompt omitted shared token policy:\n%s", task.Arm, prompt)
+		}
+		if task.Arm == ArmACR {
+			request, loadErr := delegation.LoadRequest(task.CheckoutPath, task.ReviewSession)
+			if loadErr != nil {
+				t.Fatalf("LoadRequest: %v", loadErr)
+			}
+			if request.Instructions.TokenEconomy != run.TokenEconomy {
+				t.Fatalf("ACR policy = %#v, run policy = %#v", request.Instructions.TokenEconomy, run.TokenEconomy)
+			}
+		}
+	}
+}
+
+func TestSubmitTaskPersistsHostReportedUsage(t *testing.T) {
+	workspace, run := benchmarkPreparedRun(t)
+	task := taskByArm(t, run, ArmBaseline)
+	submission := TaskSubmission{
+		ProtocolVersion: BenchmarkProtocolVersion, RunID: run.ID, TaskID: task.ID,
+		Executor: Executor{Host: "codex", Model: "sol", ContextID: "usage-context"},
+		Usage:    &Usage{InputTokens: 1200, OutputTokens: 300, TotalTokens: 1500},
+	}
+	stored, err := SubmitTask(workspace, run.ID, task.ID, submission)
+	if err != nil {
+		t.Fatalf("SubmitTask: %v", err)
+	}
+	if stored.Usage == nil || stored.Usage.TotalTokens != 1500 {
+		t.Fatalf("stored usage = %#v", stored.Usage)
+	}
+}
+
+func TestACRArmRejectsSubmissionBeforeValidatedReviewCompletes(t *testing.T) {
+	workspace, run := benchmarkPreparedRun(t)
+	task := taskByArm(t, run, ArmACR)
+	_, err := SubmitTask(workspace, run.ID, task.ID, TaskSubmission{
+		ProtocolVersion: BenchmarkProtocolVersion, RunID: run.ID, TaskID: task.ID,
+		Executor: Executor{Host: "codex", Model: "sol", ContextID: "acr-context"}, Findings: []Finding{},
+	})
+	if err == nil || !strings.Contains(err.Error(), "ACR review is incomplete") {
+		t.Fatalf("unphased ACR submission error = %v", err)
+	}
+}
+
+func TestBenchmarkCommunicationPolicyAndUsageValidation(t *testing.T) {
+	policy := delegation.TokenEconomy{Mode: delegation.TokenEconomyCaveman, Level: delegation.CavemanFull}
+	tests := []struct {
+		name          string
+		communication *delegation.Communication
+	}{
+		{name: "missing"},
+		{name: "wrong mode", communication: &delegation.Communication{Mode: delegation.TokenEconomyNormal, Level: delegation.CavemanFull, Backend: delegation.CommunicationSkill}},
+		{name: "wrong level", communication: &delegation.Communication{Mode: delegation.TokenEconomyCaveman, Level: delegation.CavemanLite, Backend: delegation.CommunicationSkill}},
+		{name: "wrong backend", communication: &delegation.Communication{Mode: delegation.TokenEconomyCaveman, Level: delegation.CavemanFull, Backend: delegation.CommunicationNormal}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if err := validateBenchmarkCommunication(policy, test.communication); err == nil {
+				t.Fatal("invalid caveman communication should fail")
+			}
+		})
+	}
+	if err := validateBenchmarkCommunication(policy, &delegation.Communication{Mode: delegation.TokenEconomyCaveman, Level: delegation.CavemanFull, Backend: delegation.CommunicationFallback}); err != nil {
+		t.Fatalf("valid compact fallback rejected: %v", err)
+	}
+	if err := validateBenchmarkCommunication(delegation.TokenEconomy{Mode: delegation.TokenEconomyNormal}, &delegation.Communication{Mode: delegation.TokenEconomyCaveman}); err == nil {
+		t.Fatal("caveman metadata should not satisfy normal policy")
+	}
+
+	workspace, run := benchmarkPreparedRun(t)
+	_ = workspace
+	task := taskByArm(t, run, ArmBaseline)
+	base := TaskSubmission{ProtocolVersion: BenchmarkProtocolVersion, RunID: run.ID, TaskID: task.ID, Executor: Executor{Host: "codex", Model: "sol", ContextID: "context"}}
+	invalid := base
+	invalid.Usage = &Usage{InputTokens: -1}
+	if err := validateTaskSubmission(run, task, invalid); err == nil || !strings.Contains(err.Error(), "cannot be negative") {
+		t.Fatalf("negative usage error = %v", err)
+	}
+	invalid.Usage = &Usage{InputTokens: 2, OutputTokens: 3, TotalTokens: 4}
+	if err := validateTaskSubmission(run, task, invalid); err == nil || !strings.Contains(err.Error(), "must equal") {
+		t.Fatalf("inconsistent usage error = %v", err)
+	}
+	invalid = base
+	invalid.Judgments = []Judgment{{PairID: "pair"}}
+	if err := validateTaskSubmission(run, task, invalid); err == nil || !strings.Contains(err.Error(), "findings, not judgments") {
+		t.Fatalf("reviewer judgment error = %v", err)
+	}
+	invalidCases := []struct {
+		name    string
+		finding Finding
+		message string
+	}{
+		{name: "missing explanation", finding: Finding{File: "review.go", StartLine: 1, EndLine: 1}, message: "requires an explanation"},
+		{name: "unsafe path", finding: Finding{File: "../outside.go", StartLine: 1, EndLine: 1, Explanation: "bad"}, message: "unsafe finding path"},
+		{name: "unreadable", finding: Finding{File: "missing.go", StartLine: 1, EndLine: 1, Explanation: "bad"}, message: "unreadable file"},
+		{name: "line range", finding: Finding{File: "review.go", StartLine: 999, EndLine: 999, Explanation: "bad"}, message: "invalid line range"},
+		{name: "confidence", finding: Finding{File: "review.go", StartLine: 1, EndLine: 1, Explanation: "bad", Confidence: 2}, message: "confidence"},
+	}
+	for _, test := range invalidCases {
+		t.Run(test.name, func(t *testing.T) {
+			invalid := base
+			invalid.Findings = []Finding{test.finding}
+			if err := validateTaskSubmission(run, task, invalid); err == nil || !strings.Contains(err.Error(), test.message) {
+				t.Fatalf("finding validation error = %v", err)
+			}
+		})
+	}
+	invalid = base
+	invalid.ProtocolVersion = "wrong"
+	if err := validateTaskSubmission(run, task, invalid); err == nil || !strings.Contains(err.Error(), "does not match") {
+		t.Fatalf("protocol mismatch error = %v", err)
+	}
+	invalid = base
+	invalid.Executor = Executor{}
+	if err := validateTaskSubmission(run, task, invalid); err == nil || !strings.Contains(err.Error(), "executor") {
+		t.Fatalf("missing executor error = %v", err)
+	}
+}
+
+func TestSubmissionRepairsUseSpecificMachineCodes(t *testing.T) {
+	tests := map[string]string{
+		"unsafe finding path":                 "unsafe_finding_path",
+		"invalid line range":                  "invalid_line_range",
+		"references an unreadable file":       "unknown_finding_file",
+		"requires a fresh context":            "context_not_isolated",
+		"must use the same model":             "model_mismatch",
+		"unsupported judgment":                "invalid_judgment",
+		"ACR review is incomplete":            "acr_review_incomplete",
+		"validated ACR findings do not match": "acr_result_mismatch",
+		"communication mode does not match":   "communication_mismatch",
+	}
+	for message, want := range tests {
+		if repair := repairForError("task-1", errors.New(message)); repair.Code != want || repair.TaskID != "task-1" {
+			t.Errorf("repair for %q = %#v, want %s", message, repair, want)
+		}
+	}
+}
 
 func TestPrepareRunCreatesDeterministicIsolatedPairedTasks(t *testing.T) {
 	repo, baseSHA, headSHA := benchmarkGitRepository(t)
@@ -275,6 +447,141 @@ func taskByArm(t *testing.T, run *Run, arm string) Task {
 	}
 	t.Fatalf("task arm %s not found", arm)
 	return Task{}
+}
+
+func completeBenchmarkACRReview(t *testing.T, task Task, findings []Finding) {
+	t.Helper()
+	request, err := delegation.LoadRequest(task.CheckoutPath, task.ReviewSession)
+	if err != nil {
+		t.Fatalf("LoadRequest: %v", err)
+	}
+	primary := delegation.Executor{Host: "codex", Model: "sol", ContextID: "acr-primary-" + task.ID}
+	communication := delegation.Communication{Mode: delegation.TokenEconomyNormal, Backend: delegation.CommunicationNormal}
+	candidateIDs := map[string]string{}
+	dispositions := make([]delegation.CandidateDisposition, 0, len(findings))
+	for {
+		phaseTask, claimErr := delegation.ClaimNextPhase(task.CheckoutPath, task.ReviewSession, "fake-agent", time.Now(), time.Minute)
+		if claimErr != nil {
+			workflow, loadErr := delegation.LoadWorkflow(task.CheckoutPath, task.ReviewSession)
+			if loadErr != nil || workflow.State != delegation.WorkflowReady {
+				t.Fatalf("claim phase: %v; workflow=%#v load=%v", claimErr, workflow, loadErr)
+			}
+			break
+		}
+		unit := requestUnitForBenchmarkTest(t, request, phaseTask.UnitID)
+		evidence := delegation.EvidenceRef{File: unit.Files[0].Path, StartLine: 1, EndLine: 1}
+		executor := primary
+		var payload any
+		switch phaseTask.Phase {
+		case delegation.PhaseIntent:
+			payload = delegation.IntentPayload{Coverage: "Inspected changed behavior.", Invariants: []delegation.EvidenceStatement{{ID: "invariant-" + phaseTask.UnitID, Summary: "Changed behavior must preserve caller expectations.", Evidence: []delegation.EvidenceRef{evidence}}}}
+		case delegation.PhaseImpact:
+			questions := make([]delegation.InvestigatedQuestion, 0)
+			for _, question := range request.ReviewQuestions {
+				if question.UnitID == phaseTask.UnitID {
+					questions = append(questions, delegation.InvestigatedQuestion{QuestionID: question.ID, Conclusion: "Inspected for benchmark fixture.", Evidence: []delegation.EvidenceRef{evidence}})
+				}
+			}
+			payload = delegation.ImpactPayload{Coverage: "Traced callers and contracts.", Traces: []delegation.ImpactTrace{{ID: "trace-" + phaseTask.UnitID, Kind: "contract", Summary: "Changed value reaches callers.", Evidence: []delegation.EvidenceRef{evidence}}}, Questions: questions}
+		case delegation.PhaseCandidates:
+			candidates := make([]delegation.Candidate, 0)
+			for index, finding := range findings {
+				if !unitContainsBenchmarkPath(unit, finding.File) {
+					continue
+				}
+				id := fmt.Sprintf("candidate-%d", index+1)
+				candidateIDs[findingKey(finding)] = id
+				candidates = append(candidates, delegation.Candidate{ID: id, File: finding.File, StartLine: finding.StartLine, EndLine: finding.EndLine, Title: finding.Title, Trigger: "Execute the changed code path.", Impact: finding.Explanation, Evidence: []delegation.EvidenceRef{{File: finding.File, StartLine: finding.StartLine, EndLine: finding.EndLine}}, Confidence: 0.9, InvariantIDs: []string{"invariant-" + phaseTask.UnitID}})
+			}
+			payload = delegation.CandidatesPayload{Coverage: "Inspected every changed line.", Candidates: candidates}
+		case delegation.PhaseCritique:
+			candidates := candidatesForBenchmarkUnit(findings, candidateIDs, unit)
+			if len(candidates) == 0 {
+				payload = delegation.CritiquePayload{CriticMode: delegation.CriticNotRequired, Verdicts: []delegation.CritiqueVerdict{}}
+			} else {
+				executor.ContextID = "acr-critic-" + phaseTask.UnitID
+				verdicts := make([]delegation.CritiqueVerdict, 0, len(candidates))
+				for _, id := range candidates {
+					verdicts = append(verdicts, delegation.CritiqueVerdict{CandidateID: id, Verdict: delegation.CritiqueSupported, Rationale: "Fixture finding is reachable.", Confidence: 0.9})
+				}
+				payload = delegation.CritiquePayload{CriticMode: delegation.CriticIndependent, Verdicts: verdicts}
+			}
+		case delegation.PhaseFinalize:
+			unitDispositions := make([]delegation.CandidateDisposition, 0)
+			for _, id := range candidatesForBenchmarkUnit(findings, candidateIDs, unit) {
+				disposition := delegation.CandidateDisposition{CandidateID: id, Outcome: delegation.DispositionSubmit, Reason: "Critic confirmed fixture finding."}
+				unitDispositions = append(unitDispositions, disposition)
+				dispositions = append(dispositions, disposition)
+			}
+			payload = delegation.FinalizePayload{Coverage: "Resolved every candidate.", CandidateDispositions: unitDispositions}
+		}
+		raw, marshalErr := json.Marshal(payload)
+		if marshalErr != nil {
+			t.Fatal(marshalErr)
+		}
+		phaseResult, submitErr := delegation.SubmitPhase(task.CheckoutPath, task.ReviewSession, phaseTask.ID, delegation.PhaseSubmission{ProtocolVersion: delegation.ProtocolVersion, SessionID: task.ReviewSession, TaskID: phaseTask.ID, UnitID: phaseTask.UnitID, Phase: phaseTask.Phase, Executor: executor, Communication: communication, Payload: raw})
+		if submitErr != nil || !phaseResult.Accepted {
+			t.Fatalf("submit %s: %#v, %v", phaseTask.Phase, phaseResult, submitErr)
+		}
+	}
+	finalFindings := make([]delegation.Finding, 0, len(findings))
+	for _, finding := range findings {
+		unitID := unitIDForBenchmarkPath(t, request, finding.File)
+		finalFindings = append(finalFindings, delegation.Finding{CandidateID: candidateIDs[findingKey(finding)], UnitID: unitID, File: finding.File, StartLine: finding.StartLine, EndLine: finding.EndLine, Severity: "medium", Category: "bug", Explanation: finding.Explanation, Evidence: finding.Explanation, Confidence: 0.9})
+	}
+	resolutions := make([]delegation.QuestionResolution, 0, len(request.ReviewQuestions))
+	for _, question := range request.ReviewQuestions {
+		resolutions = append(resolutions, delegation.QuestionResolution{QuestionID: question.ID, Outcome: "no_finding", Evidence: "Investigated in fixture review."})
+	}
+	result, err := delegation.Submit(task.CheckoutPath, task.ReviewSession, delegation.Submission{ProtocolVersion: delegation.ProtocolVersion, SessionID: task.ReviewSession, QuestionResolutions: resolutions, CandidateDispositions: dispositions, Findings: finalFindings})
+	if err != nil || len(result.Rejected) != 0 {
+		t.Fatalf("final ACR submit: %#v, %v", result, err)
+	}
+}
+
+func requestUnitForBenchmarkTest(t *testing.T, request *delegation.Request, unitID string) delegation.ReviewUnit {
+	t.Helper()
+	for _, unit := range request.Units {
+		if unit.ID == unitID {
+			return unit
+		}
+	}
+	t.Fatalf("unit %s not found", unitID)
+	return delegation.ReviewUnit{}
+}
+
+func unitContainsBenchmarkPath(unit delegation.ReviewUnit, path string) bool {
+	for _, file := range unit.Files {
+		if file.Path == path {
+			return true
+		}
+	}
+	return false
+}
+
+func candidatesForBenchmarkUnit(findings []Finding, ids map[string]string, unit delegation.ReviewUnit) []string {
+	result := make([]string, 0)
+	for _, finding := range findings {
+		if unitContainsBenchmarkPath(unit, finding.File) {
+			result = append(result, ids[findingKey(finding)])
+		}
+	}
+	return result
+}
+
+func unitIDForBenchmarkPath(t *testing.T, request *delegation.Request, path string) string {
+	t.Helper()
+	for _, unit := range request.Units {
+		if unitContainsBenchmarkPath(unit, path) {
+			return unit.ID
+		}
+	}
+	t.Fatalf("path %s not found", path)
+	return ""
+}
+
+func findingKey(finding Finding) string {
+	return fmt.Sprintf("%s:%d:%d:%s", finding.File, finding.StartLine, finding.EndLine, finding.Explanation)
 }
 
 func writeSubmissionFile(t *testing.T, path string, submission TaskSubmission) {

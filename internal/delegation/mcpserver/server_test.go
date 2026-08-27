@@ -38,11 +38,62 @@ func TestServerExposesDelegationTools(t *testing.T) {
 	}
 	for _, name := range []string{
 		"review_prepare", "review_get_request", "review_get_briefing", "review_create_draft", "review_get_unit", "review_submit_findings", "review_validate_findings",
-		"review_get_result", "review_render", "review_handoff", "review_session_list",
+		"review_get_result", "review_render", "review_handoff", "review_session_list", "review_phase_next", "review_phase_submit", "review_phase_status",
 	} {
 		if !got[name] {
 			t.Errorf("missing MCP tool %q", name)
 		}
+	}
+}
+
+func TestMCPPhaseHandlersHonorCavemanPolicy(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repo, "app.go"), []byte("package app\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := handlePrepare(context.Background(), rawJSON(t, map[string]any{
+		"repo": repo, "paths": []string{"app.go"}, "caveman": true, "caveman_level": "lite",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := prepared.(*delegation.Request)
+	next, err := handlePhaseNext(context.Background(), rawJSON(t, map[string]any{
+		"repo": repo, "session_id": request.SessionID, "worker": "mcp-worker",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed := next.(map[string]any)
+	task := claimed["task"].(*delegation.PhaseTask)
+	if task.Phase != delegation.PhaseIntent || !strings.Contains(claimed["prompt"].(string), "caveman skill level lite") {
+		t.Fatalf("unexpected phase next: %#v", claimed)
+	}
+	payload, err := json.Marshal(delegation.IntentPayload{
+		Coverage:        "Inspected source.",
+		BehaviorChanges: []delegation.EvidenceStatement{{ID: "behavior-1", Summary: "File exists.", Evidence: []delegation.EvidenceRef{{File: "app.go", StartLine: 1, EndLine: 1}}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	value, err := handlePhaseSubmit(context.Background(), rawJSON(t, map[string]any{
+		"repo": repo, "session_id": request.SessionID, "task_id": task.ID,
+		"submission": delegation.PhaseSubmission{
+			ProtocolVersion: delegation.ProtocolVersion, SessionID: request.SessionID, TaskID: task.ID,
+			UnitID: task.UnitID, Phase: task.Phase,
+			Executor:      delegation.Executor{Host: "codex", Model: "sol", ContextID: "primary"},
+			Communication: delegation.Communication{Mode: delegation.TokenEconomyCaveman, Level: delegation.CavemanLite, Backend: delegation.CommunicationFallback},
+			Payload:       payload,
+		},
+	}))
+	if err != nil || !value.(*delegation.PhaseSubmitResult).Accepted {
+		t.Fatalf("phase submit = %#v, %v", value, err)
+	}
+	status, err := handlePhaseStatus(context.Background(), rawJSON(t, map[string]any{
+		"repo": repo, "session_id": request.SessionID,
+	}))
+	if err != nil || status.(*delegation.Workflow).Tasks[0].State != delegation.PhaseSubmitted {
+		t.Fatalf("phase status = %#v, %v", status, err)
 	}
 }
 
@@ -55,13 +106,13 @@ func TestMCPHandlersCompleteProviderFreeRoundTrip(t *testing.T) {
 	}
 
 	prepared, err := handlePrepare(context.Background(), rawJSON(t, map[string]any{
-		"repo": repo, "paths": []string{"app.go"},
+		"repo": repo, "paths": []string{"app.go"}, "profile": "standard",
 	}))
 	if err != nil {
 		t.Fatalf("review_prepare: %v", err)
 	}
 	request := prepared.(*delegation.Request)
-	if request.Instructions.ReviewProfile != delegation.ReviewProfileDeep {
+	if request.Instructions.ReviewProfile != delegation.ReviewProfileStandard {
 		t.Fatalf("unexpected default profile: %#v", request.Instructions)
 	}
 	if _, err := handleGetRequest(context.Background(), rawJSON(t, map[string]any{
@@ -118,6 +169,44 @@ func TestMCPHandlersCompleteProviderFreeRoundTrip(t *testing.T) {
 	})); err != nil {
 		t.Fatalf("review_render: %v", err)
 	}
+	loaded, err := handleGetResult(context.Background(), rawJSON(t, map[string]any{
+		"repo": repo, "session_id": request.SessionID,
+	}))
+	if err != nil || loaded.(*delegation.Result).SessionID != request.SessionID {
+		t.Fatalf("review_get_result = %#v, %v", loaded, err)
+	}
+	listed, err := handleList(context.Background(), rawJSON(t, map[string]any{"repo": repo}))
+	if err != nil || len(listed.([]delegation.SessionSummary)) != 1 {
+		t.Fatalf("review_session_list = %#v, %v", listed, err)
+	}
+	jsonResult, err := handleRender(context.Background(), rawJSON(t, map[string]any{
+		"repo": repo, "session_id": request.SessionID, "format": "json",
+	}))
+	if err != nil || jsonResult.(*delegation.Result).SessionID != request.SessionID {
+		t.Fatalf("JSON render = %#v, %v", jsonResult, err)
+	}
+	if _, err := handleRender(context.Background(), rawJSON(t, map[string]any{
+		"repo": repo, "session_id": request.SessionID, "format": "json", "fix_prompt": "combined",
+	})); err == nil || !strings.Contains(err.Error(), "requires Markdown") {
+		t.Fatalf("JSON fix prompt error = %v", err)
+	}
+	if _, err := handleRender(context.Background(), rawJSON(t, map[string]any{
+		"repo": repo, "session_id": request.SessionID, "format": "xml",
+	})); err == nil || !strings.Contains(err.Error(), "unsupported format") {
+		t.Fatalf("unsupported render error = %v", err)
+	}
+}
+
+func TestMCPHandlersRejectMalformedSessionArguments(t *testing.T) {
+	if _, err := handleGetResult(context.Background(), json.RawMessage(`{"repo":`)); err == nil || !strings.Contains(err.Error(), "decode session") {
+		t.Fatalf("malformed session args error = %v", err)
+	}
+	if _, err := handleGetResult(context.Background(), rawJSON(t, map[string]any{"repo": "/tmp"})); err == nil || !strings.Contains(err.Error(), "required") {
+		t.Fatalf("missing session args error = %v", err)
+	}
+	if _, err := handleList(context.Background(), json.RawMessage(`{"repo":`)); err == nil || !strings.Contains(err.Error(), "decode review_session_list") {
+		t.Fatalf("malformed list args error = %v", err)
+	}
 }
 
 func TestReviewRenderIncludesPerFindingFixPrompt(t *testing.T) {
@@ -126,7 +215,7 @@ func TestReviewRenderIncludesPerFindingFixPrompt(t *testing.T) {
 		t.Fatalf("write source: %v", err)
 	}
 	request, err := delegation.Prepare(repo, delegation.PrepareInput{
-		Mode: delegation.ModeScan,
+		Mode: delegation.ModeScan, Profile: delegation.ReviewProfileStandard,
 		Units: []delegation.PreparedUnit{{
 			ID: "unit-1", Files: []delegation.PreparedFile{{Path: "app.go"}},
 		}},
@@ -164,7 +253,7 @@ func TestReviewSubmitCanReturnCompletedMarkdownReport(t *testing.T) {
 		t.Fatalf("write source: %v", err)
 	}
 	request, err := delegation.Prepare(repo, delegation.PrepareInput{
-		Mode: delegation.ModeScan,
+		Mode: delegation.ModeScan, Profile: delegation.ReviewProfileStandard,
 		Units: []delegation.PreparedUnit{{
 			ID: "unit-1", Files: []delegation.PreparedFile{{Path: "app.go"}},
 		}},

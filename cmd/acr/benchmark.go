@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/alibaba/open-code-review/internal/benchmark"
+	"github.com/alibaba/open-code-review/internal/delegation"
 	"github.com/spf13/cobra"
 )
 
@@ -102,14 +103,22 @@ func newBenchmarkDatasetCommand() *cobra.Command {
 
 func newBenchmarkPrepareCommand(options *benchmarkCLIOptions) *cobra.Command {
 	var datasetPath, prURL, repository, checkoutMap, cacheDirectory string
+	var cavemanLevel string
 	var limit, trials int
 	var seed int64
-	var allCases bool
+	var allCases, caveman bool
 	command := &cobra.Command{
 		Use:   "prepare",
 		Short: "Prepare paired baseline and ACR benchmark tasks",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if cavemanLevel != "" && !caveman {
+				return fmt.Errorf("--caveman-level requires --caveman")
+			}
+			tokenEconomy := delegation.TokenEconomy{Mode: delegation.TokenEconomyNormal}
+			if caveman {
+				tokenEconomy = delegation.TokenEconomy{Mode: delegation.TokenEconomyCaveman, Level: cavemanLevel}
+			}
 			selectors := 0
 			if prURL != "" {
 				selectors++
@@ -134,7 +143,7 @@ func newBenchmarkPrepareCommand(options *benchmarkCLIOptions) *cobra.Command {
 			run, err := benchmark.PrepareRun(cmd.Context(), workspace, benchmark.PrepareRunOptions{
 				DatasetPath: datasetPath, PRURL: prURL, Limit: limit, All: allCases,
 				Trials: trials, Seed: seed, Repository: repository,
-				RepositoryOverrides: overrides, CacheDir: cacheDirectory,
+				RepositoryOverrides: overrides, CacheDir: cacheDirectory, TokenEconomy: tokenEconomy,
 			})
 			if err != nil {
 				return err
@@ -156,6 +165,8 @@ func newBenchmarkPrepareCommand(options *benchmarkCLIOptions) *cobra.Command {
 	command.Flags().StringVar(&repository, "repo", "", "existing checkout override for a one-case run")
 	command.Flags().StringVar(&checkoutMap, "checkout-map", "", "JSON object mapping case IDs to existing checkouts")
 	command.Flags().StringVar(&cacheDirectory, "cache-dir", "", "managed Git mirror cache")
+	command.Flags().BoolVar(&caveman, "caveman", false, "use token-economical agent communication for both arms")
+	command.Flags().StringVar(&cavemanLevel, "caveman-level", "", "Caveman intensity: lite, full, or ultra (default: full)")
 	_ = command.MarkFlagRequired("dataset")
 	return command
 }

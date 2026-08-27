@@ -5,10 +5,11 @@ This repository builds `acr`, a provider-free code review CLI. The active coding
 ## Running a review
 
 1. Run `acr review prepare` for workspace changes. Use `--from/--to`, `--commit`, or `--path` when the user names another target.
-2. Read the returned `request_path` and inspect every listed review unit and file against its supplied rule.
-3. Write findings to the returned `findings_path` using protocol version `1` and the schema in `skills/agent-code-review/SKILL.md`.
-4. Run `acr review submit --session <id> --input <findings_path> --render`. Successful validation emits the completed Markdown report with one copyable repair prompt per finding; present that output directly. If the command instead returns rejection JSON, repair it once and rerun the same command.
-5. Never stop at a validation summary or tell the user to run a render command. Use `--fix-prompt combined` with `submit --render` only when the user requests one prompt for the complete result.
+2. For deep protocol-2 sessions, loop `acr review phase next` and `acr review phase submit` through intent, impact, candidates, critique, and finalize. Use a fresh same-model critic context when available; label the same-context fallback honestly.
+3. Run `acr review draft`, preserve finalized candidate dispositions, add their findings and question resolutions, then run `acr review submit --render`.
+4. Present successful Markdown directly. Repair rejection JSON once. Never leave rendering for the user.
+
+When requested, `--caveman` uses the installed Caveman skill or the labeled compact fallback. Token economy never reduces evidence or phase coverage. Protocol-1 and standard sessions retain their legacy direct flow.
 
 Review mode is read-only. Do not modify source files unless the user separately asks to fix findings.
 

@@ -101,8 +101,9 @@ func TestBriefGeneratesFocusedQuestionsForRiskyDiffShapes(t *testing.T) {
 
 func TestSubmitRequiresEveryGeneratedQuestionToBeResolved(t *testing.T) {
 	repo, request := prepareRiskFixture(t)
+	downgradeSessionToLegacy(t, repo, request)
 	result, err := Submit(repo, request.SessionID, Submission{
-		ProtocolVersion: ProtocolVersion,
+		ProtocolVersion: request.ProtocolVersion,
 		SessionID:       request.SessionID,
 	})
 	if err != nil {
@@ -121,7 +122,7 @@ func TestSubmitRequiresEveryGeneratedQuestionToBeResolved(t *testing.T) {
 		})
 	}
 	result, err = Submit(repo, request.SessionID, Submission{
-		ProtocolVersion:     ProtocolVersion,
+		ProtocolVersion:     request.ProtocolVersion,
 		SessionID:           request.SessionID,
 		QuestionResolutions: resolutions,
 	})
@@ -135,6 +136,7 @@ func TestSubmitRequiresEveryGeneratedQuestionToBeResolved(t *testing.T) {
 
 func TestCreateSubmissionDraftScaffoldsQuestionsWithoutOverwriting(t *testing.T) {
 	repo, request := prepareRiskFixture(t)
+	downgradeSessionToLegacy(t, repo, request)
 	draft, path, err := CreateSubmissionDraft(repo, request.SessionID)
 	if err != nil {
 		t.Fatalf("CreateSubmissionDraft() error: %v", err)
@@ -171,6 +173,7 @@ func TestSubmitAcceptsNearestTargetLineForDeletionOnlyFinding(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Prepare() error: %v", err)
 	}
+	downgradeSessionToLegacy(t, repo, request)
 	resolutions := make([]QuestionResolution, 0, len(request.ReviewQuestions))
 	for _, question := range request.ReviewQuestions {
 		index := 0
@@ -179,7 +182,7 @@ func TestSubmitAcceptsNearestTargetLineForDeletionOnlyFinding(t *testing.T) {
 		})
 	}
 	result, err := Submit(repo, request.SessionID, Submission{
-		ProtocolVersion:     ProtocolVersion,
+		ProtocolVersion:     request.ProtocolVersion,
 		SessionID:           request.SessionID,
 		QuestionResolutions: resolutions,
 		Findings: []Finding{{
@@ -218,7 +221,7 @@ func TestHandoffPromptDirectsIndependentDeepReview(t *testing.T) {
 	}
 	for _, want := range []string{
 		"independent reviewer", request.Repository.Root, request.SessionID, "invariants", "dependencies", "contracts", "lifecycle", "verification", "critique",
-		"Resolve every focused risk question", "question_resolutions", "acr review brief", "acr review draft", "acr review submit", "--render", "Do not stop at a validation summary",
+		"Resolve every focused risk question", "acr review phase next", "acr review phase submit", "fresh critic", "acr review draft", "acr review submit", "--render", "Do not stop at a validation summary",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("handoff prompt missing %q:\n%s", want, prompt)
@@ -228,9 +231,10 @@ func TestHandoffPromptDirectsIndependentDeepReview(t *testing.T) {
 
 func TestSubmitNormalizesCorrectnessCategoryToBug(t *testing.T) {
 	repo, request := prepareDiffFixture(t)
+	downgradeSessionToLegacy(t, repo, request)
 
 	result, err := Submit(repo, request.SessionID, Submission{
-		ProtocolVersion: ProtocolVersion,
+		ProtocolVersion: request.ProtocolVersion,
 		SessionID:       request.SessionID,
 		Findings: []Finding{{
 			UnitID: "unit-0001", File: "app.go", StartLine: 2, EndLine: 2,
@@ -272,6 +276,7 @@ func TestPrepareRejectsSymlinkedSource(t *testing.T) {
 
 func TestSubmitAcceptsChangedLineAndCollapsesDuplicates(t *testing.T) {
 	repo, request := prepareDiffFixture(t)
+	downgradeSessionToLegacy(t, repo, request)
 	finding := Finding{
 		UnitID:      "unit-0001",
 		File:        "app.go",
@@ -285,7 +290,7 @@ func TestSubmitAcceptsChangedLineAndCollapsesDuplicates(t *testing.T) {
 	}
 
 	result, err := Submit(repo, request.SessionID, Submission{
-		ProtocolVersion: ProtocolVersion,
+		ProtocolVersion: request.ProtocolVersion,
 		SessionID:       request.SessionID,
 		Findings:        []Finding{finding, finding},
 	})
@@ -305,6 +310,7 @@ func TestSubmitAcceptsChangedLineAndCollapsesDuplicates(t *testing.T) {
 
 func TestSubmitRejectsTraversalInvalidLineAndNonChangedLine(t *testing.T) {
 	repo, request := prepareDiffFixture(t)
+	downgradeSessionToLegacy(t, repo, request)
 	base := Finding{
 		UnitID:      "unit-0001",
 		File:        "app.go",
@@ -324,7 +330,7 @@ func TestSubmitRejectsTraversalInvalidLineAndNonChangedLine(t *testing.T) {
 	contextLine.StartLine, contextLine.EndLine = 1, 1
 
 	result, err := Submit(repo, request.SessionID, Submission{
-		ProtocolVersion: ProtocolVersion,
+		ProtocolVersion: request.ProtocolVersion,
 		SessionID:       request.SessionID,
 		Findings:        []Finding{traversal, invalidLine, contextLine},
 	})
@@ -352,7 +358,7 @@ func TestSubmitRejectsStaleFile(t *testing.T) {
 	}
 
 	result, err := Submit(repo, request.SessionID, Submission{
-		ProtocolVersion: ProtocolVersion,
+		ProtocolVersion: request.ProtocolVersion,
 		SessionID:       request.SessionID,
 		Findings: []Finding{{
 			UnitID: "unit-0001", File: "app.go", StartLine: 2, EndLine: 2,
@@ -375,7 +381,7 @@ func TestSubmitRejectsStaleSessionWithNoFindings(t *testing.T) {
 	}
 
 	result, err := Submit(repo, request.SessionID, Submission{
-		ProtocolVersion: ProtocolVersion,
+		ProtocolVersion: request.ProtocolVersion,
 		SessionID:       request.SessionID,
 		Findings:        []Finding{},
 	})
@@ -470,4 +476,16 @@ func containsString(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func downgradeSessionToLegacy(t *testing.T, repo string, request *Request) {
+	t.Helper()
+	request.ProtocolVersion = LegacyProtocolVersion
+	request.Instructions.TokenEconomy = TokenEconomy{}
+	if err := writeJSON(filepath.Join(SessionDir(repo, request.SessionID), RequestFileName), request); err != nil {
+		t.Fatalf("write legacy request: %v", err)
+	}
+	if err := os.Remove(filepath.Join(SessionDir(repo, request.SessionID), WorkflowFileName)); err != nil && !os.IsNotExist(err) {
+		t.Fatalf("remove workflow: %v", err)
+	}
 }

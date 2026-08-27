@@ -147,7 +147,7 @@ func checkProtocolRoundTrip() doctorCheck {
 		return doctorCheck{Detail: err.Error()}
 	}
 	request, err := delegation.Prepare(repo, delegation.PrepareInput{
-		Mode: delegation.ModeScan,
+		Mode: delegation.ModeScan, Profile: delegation.ReviewProfileStandard,
 		Units: []delegation.PreparedUnit{{
 			ID: "doctor", Files: []delegation.PreparedFile{{Path: "probe.txt"}},
 		}},

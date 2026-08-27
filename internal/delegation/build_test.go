@@ -154,7 +154,7 @@ func TestBuildCommitSnapshotsTargetWhenWorktreeHasAdvanced(t *testing.T) {
 		t.Fatalf("advance worktree: %v", err)
 	}
 
-	request, err := Build(context.Background(), BuildOptions{RepoDir: repo, Commit: target})
+	request, err := Build(context.Background(), BuildOptions{RepoDir: repo, Commit: target, Profile: ReviewProfileStandard})
 	if err != nil {
 		t.Fatalf("Build() error: %v", err)
 	}
@@ -167,6 +167,32 @@ func TestBuildCommitSnapshotsTargetWhenWorktreeHasAdvanced(t *testing.T) {
 	})
 	if err != nil || len(result.Rejected) != 0 {
 		t.Fatalf("Submit() = %#v, %v; immutable target should remain valid", result, err)
+	}
+}
+
+func TestSubmitRejectsTrackedSourceChangeOutsidePreparedUnits(t *testing.T) {
+	repo := initBuildTestRepo(t)
+	if err := os.WriteFile(filepath.Join(repo, "helper.go"), []byte("package app\nfunc Helper() int { return 1 }\n"), 0o644); err != nil {
+		t.Fatalf("write helper: %v", err)
+	}
+	runGit(t, repo, "add", "helper.go")
+	runGit(t, repo, "commit", "-m", "add helper")
+	if err := os.WriteFile(filepath.Join(repo, "app.go"), []byte("package app\nfunc Value() int { return 2 }\n"), 0o644); err != nil {
+		t.Fatalf("modify reviewed source: %v", err)
+	}
+	request, err := Build(context.Background(), BuildOptions{RepoDir: repo, Profile: ReviewProfileStandard})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "helper.go"), []byte("package app\nfunc Helper() int { return 9 }\n"), 0o644); err != nil {
+		t.Fatalf("modify unprepared tracked source: %v", err)
+	}
+	result, err := Submit(repo, request.SessionID, Submission{ProtocolVersion: ProtocolVersion, SessionID: request.SessionID, Findings: []Finding{}})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	if !hasRejectionCode(result.Rejected, "source_modified") {
+		t.Fatalf("tracked source mutation accepted: %#v", result)
 	}
 }
 

@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/SarimSyed/agent-code-review/schemas/review-phase-submission-v2.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["protocol_version", "session_id", "task_id", "unit_id", "phase", "executor", "communication", "payload"],
+  "properties": {
+    "protocol_version": { "const": "2" },
+    "session_id": { "type": "string", "minLength": 1 },
+    "task_id": { "type": "string", "minLength": 1 },
+    "unit_id": { "type": "string", "minLength": 1 },
+    "phase": { "enum": ["intent", "impact", "candidates", "critique", "finalize"] },
+    "executor": { "$ref": "#/$defs/executor" },
+    "communication": { "$ref": "#/$defs/communication" },
+    "payload": { "type": "object" }
+  },
+  "$defs": {
+    "executor": { "type": "object", "additionalProperties": false, "required": ["host", "model", "context_id"], "properties": { "host": { "type": "string", "minLength": 1 }, "model": { "type": "string", "minLength": 1 }, "context_id": { "type": "string", "minLength": 1 } } },
+    "communication": { "type": "object", "additionalProperties": false, "required": ["mode", "backend"], "properties": { "mode": { "enum": ["normal", "caveman"] }, "level": { "enum": ["lite", "full", "ultra"] }, "backend": { "enum": ["normal", "skill", "compact_fallback"] } } }
+  }
+}

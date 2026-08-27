@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/SarimSyed/agent-code-review/schemas/review-result-v2.json",
+  "type": "object",
+  "required": ["protocol_version", "session_id", "findings", "rejected", "summary"],
+  "properties": {
+    "protocol_version": { "const": "2" },
+    "session_id": { "type": "string", "minLength": 1 },
+    "findings": { "type": "array" },
+    "rejected": { "type": "array" },
+    "summary": { "type": "object" },
+    "assurance": {
+      "type": "object",
+      "properties": {
+        "workflow_state": { "enum": ["active", "ready", "complete"] },
+        "critic_mode": { "enum": ["independent", "same_context", "not_required"] },
+        "phases_completed": { "type": "integer", "minimum": 0 },
+        "communication_mode": { "enum": ["normal", "caveman"] },
+        "communication_backend": { "enum": ["normal", "skill", "compact_fallback"] }
+      }
+    }
+  }
+}

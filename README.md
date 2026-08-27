@@ -11,7 +11,11 @@ acr prepares immutable review units
               ↓
 acr detects risky async, contract, and lifecycle changes
               ↓
-active coding agent reviews every unit
+active agent completes intent and impact barriers
+              ↓
+active agent proposes candidates; blinded critic challenges them
+              ↓
+primary agent finalizes survivors
               ↓
 acr validates paths, snapshots, lines, and schema
               ↓
@@ -45,6 +49,18 @@ acr review prepare --profile deep --commit HEAD
 # Full-file scan
 acr review prepare --profile deep --path src
 
+# Optional compact agent communication (full is the default level)
+acr review prepare --profile deep --caveman --caveman-level full
+
+# Claim and submit every unit through intent, impact, candidates, critique,
+# and finalize. Critique uses a fresh same-model context when available.
+acr review phase next --session <id> --worker <worker>
+acr review phase submit --session <id> --task <task-id> --input <phase-result>
+acr review phase status --session <id>
+
+# After every phase is complete, create the final findings transport.
+acr review draft --session <id>
+
 # After the active agent writes findings.json, validate and immediately render
 # the completed report with one focused repair prompt per finding.
 acr review submit --session <id> --input <findings-path> --render
@@ -55,11 +71,8 @@ acr review submit --session <id> --input <findings-path> --render --fix-prompt c
 # Re-render an existing validated result (per-finding prompts are the default).
 acr review render --session <id> --format markdown
 
-# Read the compact agent-safe manifest; do not print the full request packet
+# Read the compact agent-safe manifest (legacy/diagnostic flow)
 acr review brief --session <id>
-
-# Create the non-overwriting question-resolution and findings form
-acr review draft --session <id>
 
 # Create a prompt for a separate reviewer task or host subagent
 acr review handoff --session <id>
@@ -69,7 +82,9 @@ Prepared sessions live in the ignored `.acr/sessions/` directory. Review prepara
 
 Fix prompts are generated deterministically from validated findings and do not call a model. Per-finding mode is the default because it keeps each repair narrowly scoped; combined and `none` modes remain available. A successful `submit --render` returns the complete report in the same command, preventing an agent from leaving rendering as a user follow-up.
 
-Deep briefs contain focused review questions for risky diff shapes such as sequential work moved into concurrency, removed call arguments, and removed listener or initialization calls. These questions are leads for the active model to verify, not automatic findings. Submission requires an evidence-backed resolution for every generated question, which makes skipped risk areas visible while preserving model judgment.
+Deep protocol-2 sessions persist five barriers. Per-unit tasks use expiring atomic claims and idempotent submissions. Evidence files are frozen when first cited. Candidates must anchor changed lines and retain lineage through critique and final disposition. A critic-rejected candidate cannot survive without an explicit override and additional evidence. Protocol-1 sessions and the standard profile remain compatible with direct submission.
+
+`--caveman` shortens prompts and agent chatter through the installed Caveman skill, or through a labeled compact fallback when unavailable. Paths, symbols, numbers, evidence, review coverage, critic independence, and final user-facing Markdown remain unchanged. ACR never estimates token usage.
 
 ## Agent integrations
 
@@ -99,7 +114,8 @@ acr benchmark dataset fetch qodo --output qodo-benchmark.json
 # Prepare one bounded paired experiment
 acr benchmark prepare \
   --dataset qodo-benchmark.json \
-  --pr https://github.com/owner/repository/pull/123
+  --pr https://github.com/owner/repository/pull/123 \
+  --caveman --caveman-level full
 
 # Agent integrations loop over these commands in fresh contexts
 acr benchmark next --run <id> --worker <unique-worker>
@@ -121,7 +137,7 @@ acr benchmark score \
   --findings .acr/sessions/<id>/result.json
 ```
 
-Reports include micro precision, recall, F1, macro F1, paired outcomes, matched/missed/extra findings, setup coverage, and a deterministic bootstrap confidence interval when at least ten pairs complete. The compatibility scorer accepts both ACR `result.json` and a minimal `{ "findings": [...] }` document.
+Reports include micro precision, recall, F1, macro F1, paired outcomes, matched/missed/extra findings, setup coverage, communication backend, exact host-reported token totals when available, and a deterministic bootstrap confidence interval when at least ten pairs complete. Caveman policy applies equally to both arms. The compatibility scorer accepts both ACR `result.json` and a minimal `{ "findings": [...] }` document.
 
 ## License
 

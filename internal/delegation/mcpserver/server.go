@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/alibaba/open-code-review/internal/delegation"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -28,6 +29,9 @@ func New(version string) *mcp.Server {
 	addTool(server, "review_render", "Render a validated review result as Markdown or JSON.", renderSchema(), handleRender)
 	addTool(server, "review_handoff", "Create a prompt for an independent reviewer task from a prepared session.", sessionSchema(), handleHandoff)
 	addTool(server, "review_session_list", "List delegated review sessions in a repository.", repoSchema(), handleList)
+	addTool(server, "review_phase_next", "Claim the next ready deep-review phase.", phaseNextSchema(), handlePhaseNext)
+	addTool(server, "review_phase_submit", "Validate and persist one deep-review phase artifact.", phaseSubmitSchema(), handlePhaseSubmit)
+	addTool(server, "review_phase_status", "Load deep-review workflow state.", sessionSchema(), handlePhaseStatus)
 	return server
 }
 
@@ -47,14 +51,16 @@ func addTool(server *mcp.Server, name, description string, schema map[string]any
 }
 
 type prepareArgs struct {
-	Repo       string   `json:"repo"`
-	From       string   `json:"from,omitempty"`
-	To         string   `json:"to,omitempty"`
-	Commit     string   `json:"commit,omitempty"`
-	Paths      []string `json:"paths,omitempty"`
-	RulePath   string   `json:"rule_path,omitempty"`
-	Background string   `json:"background,omitempty"`
-	Profile    string   `json:"profile,omitempty"`
+	Repo         string   `json:"repo"`
+	From         string   `json:"from,omitempty"`
+	To           string   `json:"to,omitempty"`
+	Commit       string   `json:"commit,omitempty"`
+	Paths        []string `json:"paths,omitempty"`
+	RulePath     string   `json:"rule_path,omitempty"`
+	Background   string   `json:"background,omitempty"`
+	Profile      string   `json:"profile,omitempty"`
+	Caveman      bool     `json:"caveman,omitempty"`
+	CavemanLevel string   `json:"caveman_level,omitempty"`
 }
 
 type sessionArgs struct {
@@ -83,16 +89,78 @@ type renderArgs struct {
 	FixPrompt string `json:"fix_prompt,omitempty"`
 }
 
+type phaseNextArgs struct {
+	Repo      string `json:"repo"`
+	SessionID string `json:"session_id"`
+	Worker    string `json:"worker"`
+}
+
+type phaseSubmitArgs struct {
+	Repo       string                     `json:"repo"`
+	SessionID  string                     `json:"session_id"`
+	TaskID     string                     `json:"task_id"`
+	Submission delegation.PhaseSubmission `json:"submission"`
+}
+
 func handlePrepare(ctx context.Context, raw json.RawMessage) (any, error) {
 	var args prepareArgs
 	if err := json.Unmarshal(raw, &args); err != nil {
 		return nil, fmt.Errorf("decode review_prepare arguments: %w", err)
 	}
+	if !args.Caveman && args.CavemanLevel != "" {
+		return nil, fmt.Errorf("caveman_level requires caveman")
+	}
+	policy := delegation.TokenEconomy{Mode: delegation.TokenEconomyNormal}
+	if args.Caveman {
+		policy = delegation.TokenEconomy{Mode: delegation.TokenEconomyCaveman, Level: args.CavemanLevel}
+	}
 	return delegation.Build(ctx, delegation.BuildOptions{
 		RepoDir: args.Repo, From: args.From, To: args.To, Commit: args.Commit,
 		Paths: args.Paths, RulePath: args.RulePath, Background: args.Background,
-		Profile: args.Profile,
+		Profile: args.Profile, TokenEconomy: policy,
 	})
+}
+
+func handlePhaseNext(_ context.Context, raw json.RawMessage) (any, error) {
+	var args phaseNextArgs
+	if err := json.Unmarshal(raw, &args); err != nil {
+		return nil, fmt.Errorf("decode review_phase_next arguments: %w", err)
+	}
+	if args.Repo == "" || args.SessionID == "" || args.Worker == "" {
+		return nil, fmt.Errorf("repo, session_id, and worker are required")
+	}
+	task, err := delegation.ClaimNextPhase(args.Repo, args.SessionID, args.Worker, time.Now().UTC(), 15*time.Minute)
+	if err != nil {
+		return nil, err
+	}
+	prompt, err := delegation.PhasePrompt(args.Repo, args.SessionID, task.ID)
+	if err != nil {
+		return nil, err
+	}
+	draft, inputPath, err := delegation.CreatePhaseDraft(args.Repo, args.SessionID, task.ID)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"protocol_version": delegation.ProtocolVersion, "session_id": args.SessionID, "task": task, "prompt": prompt, "input_path": inputPath, "submission": draft}, nil
+}
+
+func handlePhaseSubmit(_ context.Context, raw json.RawMessage) (any, error) {
+	var args phaseSubmitArgs
+	if err := json.Unmarshal(raw, &args); err != nil {
+		return nil, fmt.Errorf("decode review_phase_submit arguments: %w", err)
+	}
+	if args.Repo == "" || args.SessionID == "" || args.TaskID == "" {
+		return nil, fmt.Errorf("repo, session_id, and task_id are required")
+	}
+	return delegation.SubmitPhase(args.Repo, args.SessionID, args.TaskID, args.Submission)
+}
+
+func handlePhaseStatus(_ context.Context, raw json.RawMessage) (any, error) {
+	args, err := decodeSessionArgs(raw)
+	if err != nil {
+		return nil, err
+	}
+	return delegation.LoadWorkflow(args.Repo, args.SessionID)
 }
 
 func handleHandoff(_ context.Context, raw json.RawMessage) (any, error) {
@@ -247,8 +315,23 @@ func prepareSchema() map[string]any {
 		"to": map[string]any{"type": "string"}, "commit": map[string]any{"type": "string"},
 		"paths":     map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
 		"rule_path": map[string]any{"type": "string"}, "background": map[string]any{"type": "string"},
-		"profile": map[string]any{"type": "string", "enum": []string{delegation.ReviewProfileDeep, delegation.ReviewProfileStandard}},
+		"profile":       map[string]any{"type": "string", "enum": []string{delegation.ReviewProfileDeep, delegation.ReviewProfileStandard}},
+		"caveman":       map[string]any{"type": "boolean"},
+		"caveman_level": map[string]any{"type": "string", "enum": []string{delegation.CavemanLite, delegation.CavemanFull, delegation.CavemanUltra}},
 	}, []string{"repo"})
+}
+
+func phaseNextSchema() map[string]any {
+	return objectSchema(map[string]any{
+		"repo": map[string]any{"type": "string"}, "session_id": map[string]any{"type": "string"}, "worker": map[string]any{"type": "string"},
+	}, []string{"repo", "session_id", "worker"})
+}
+
+func phaseSubmitSchema() map[string]any {
+	return objectSchema(map[string]any{
+		"repo": map[string]any{"type": "string"}, "session_id": map[string]any{"type": "string"},
+		"task_id": map[string]any{"type": "string"}, "submission": map[string]any{"type": "object"},
+	}, []string{"repo", "session_id", "task_id", "submission"})
 }
 
 func sessionSchema() map[string]any {

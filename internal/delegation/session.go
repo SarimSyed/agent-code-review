@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -50,6 +51,14 @@ func Prepare(repo string, input PrepareInput) (*Request, error) {
 	if err != nil {
 		return nil, err
 	}
+	tokenEconomy, err := normalizeTokenEconomy(input.TokenEconomy)
+	if err != nil {
+		return nil, err
+	}
+	trackedSourceSHA, err := trackedSourceFingerprint(root)
+	if err != nil {
+		return nil, err
+	}
 
 	sessionID, err := newSessionID()
 	if err != nil {
@@ -60,7 +69,7 @@ func Prepare(repo string, input PrepareInput) (*Request, error) {
 		SessionID:       sessionID,
 		CreatedAt:       time.Now().UTC(),
 		Mode:            input.Mode,
-		Repository:      Repository{Root: root, Revision: input.Revision},
+		Repository:      Repository{Root: root, Revision: input.Revision, TrackedSourceSHA256: trackedSourceSHA},
 		Background:      input.Background,
 		Units:           make([]ReviewUnit, 0, len(input.Units)),
 		Instructions: Instructions{
@@ -71,6 +80,7 @@ func Prepare(repo string, input PrepareInput) (*Request, error) {
 			AllowedCategories: SupportedCategories(),
 			ReviewProfile:     profile,
 			RequiredPasses:    reviewPasses(profile),
+			TokenEconomy:      tokenEconomy,
 		},
 	}
 
@@ -127,7 +137,53 @@ func Prepare(repo string, input PrepareInput) (*Request, error) {
 	if err := writeJSON(filepath.Join(dir, RequestFileName), request); err != nil {
 		return nil, err
 	}
+	if err := saveWorkflow(root, newWorkflow(request)); err != nil {
+		return nil, err
+	}
 	return request, nil
+}
+
+func trackedSourceFingerprint(root string) (string, error) {
+	probe := exec.Command("git", "-C", root, "rev-parse", "--verify", "HEAD")
+	if err := probe.Run(); err != nil {
+		return "", nil
+	}
+	command := exec.Command("git", "-C", root, "diff", "--no-ext-diff", "--binary", "HEAD", "--")
+	data, err := command.Output()
+	if err != nil {
+		return "", fmt.Errorf("fingerprint tracked source: %w", err)
+	}
+	digest := sha256.Sum256(data)
+	return hex.EncodeToString(digest[:]), nil
+}
+
+func normalizeTokenEconomy(value TokenEconomy) (TokenEconomy, error) {
+	value.Mode = strings.ToLower(strings.TrimSpace(value.Mode))
+	value.Level = strings.ToLower(strings.TrimSpace(value.Level))
+	if value.Mode == "" || value.Mode == TokenEconomyNormal {
+		if value.Level != "" {
+			return TokenEconomy{}, fmt.Errorf("caveman level requires caveman mode")
+		}
+		return TokenEconomy{Mode: TokenEconomyNormal}, nil
+	}
+	if value.Mode != TokenEconomyCaveman {
+		return TokenEconomy{}, fmt.Errorf("unsupported token economy mode %q", value.Mode)
+	}
+	if value.Level == "" {
+		value.Level = CavemanFull
+	}
+	switch value.Level {
+	case CavemanLite, CavemanFull, CavemanUltra:
+		return value, nil
+	default:
+		return TokenEconomy{}, fmt.Errorf("unsupported caveman level %q", value.Level)
+	}
+}
+
+// NormalizeTokenEconomy validates and fills defaults for a host communication
+// policy without starting a review session.
+func NormalizeTokenEconomy(value TokenEconomy) (TokenEconomy, error) {
+	return normalizeTokenEconomy(value)
 }
 
 func normalizeReviewProfile(value string) (string, error) {
@@ -167,7 +223,7 @@ func LoadRequest(repo, sessionID string) (*Request, error) {
 	if err := readJSON(filepath.Join(SessionDir(repo, sessionID), RequestFileName), &request); err != nil {
 		return nil, err
 	}
-	if request.ProtocolVersion != ProtocolVersion {
+	if request.ProtocolVersion != ProtocolVersion && request.ProtocolVersion != LegacyProtocolVersion {
 		return nil, fmt.Errorf("unsupported request protocol %q", request.ProtocolVersion)
 	}
 	if request.SessionID != sessionID {
@@ -239,7 +295,7 @@ func LoadResult(repo, sessionID string) (*Result, error) {
 	if err := readJSON(filepath.Join(SessionDir(repo, sessionID), ResultFileName), &result); err != nil {
 		return nil, err
 	}
-	if result.ProtocolVersion != ProtocolVersion {
+	if result.ProtocolVersion != ProtocolVersion && result.ProtocolVersion != LegacyProtocolVersion {
 		return nil, fmt.Errorf("unsupported result protocol %q", result.ProtocolVersion)
 	}
 	if result.SessionID != sessionID {
@@ -256,10 +312,27 @@ func CreateSubmissionDraft(repo, sessionID string) (*Submission, string, error) 
 		return nil, "", err
 	}
 	draft := &Submission{
-		ProtocolVersion:     ProtocolVersion,
+		ProtocolVersion:     request.ProtocolVersion,
 		SessionID:           sessionID,
 		QuestionResolutions: make([]QuestionResolution, 0, len(request.ReviewQuestions)),
 		Findings:            make([]Finding, 0),
+	}
+	if request.ProtocolVersion == ProtocolVersion && request.Instructions.ReviewProfile == ReviewProfileDeep {
+		workflow, err := LoadWorkflow(repo, sessionID)
+		if err != nil {
+			return nil, "", err
+		}
+		if workflow.State != WorkflowReady && workflow.State != WorkflowComplete {
+			return nil, "", fmt.Errorf("deep workflow phases are incomplete; run acr review phase next")
+		}
+		dispositions, err := workflowFinalDispositions(workflow)
+		if err != nil {
+			return nil, "", err
+		}
+		draft.CandidateDispositions = append(draft.CandidateDispositions, dispositions...)
+		sort.Slice(draft.CandidateDispositions, func(i, j int) bool {
+			return draft.CandidateDispositions[i].CandidateID < draft.CandidateDispositions[j].CandidateID
+		})
 	}
 	for _, question := range request.ReviewQuestions {
 		draft.QuestionResolutions = append(draft.QuestionResolutions, QuestionResolution{QuestionID: question.ID})

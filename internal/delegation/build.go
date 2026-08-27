@@ -20,15 +20,16 @@ import (
 const maxFilesPerUnit = 10
 
 type BuildOptions struct {
-	RepoDir     string
-	From        string
-	To          string
-	Commit      string
-	Paths       []string
-	RulePath    string
-	Background  string
-	Profile     string
-	MaxGitProcs int
+	RepoDir      string
+	From         string
+	To           string
+	Commit       string
+	Paths        []string
+	RulePath     string
+	Background   string
+	Profile      string
+	TokenEconomy TokenEconomy
+	MaxGitProcs  int
 }
 
 func Build(ctx context.Context, options BuildOptions) (*Request, error) {
@@ -105,8 +106,8 @@ func buildDiff(ctx context.Context, repo string, options BuildOptions, runner *g
 	}
 	return Prepare(repo, PrepareInput{
 		Mode: ModeDiff, Revision: revision, Background: options.Background,
-		Profile: options.Profile,
-		Units:   groupPreparedFiles(files, resolver),
+		Profile: options.Profile, TokenEconomy: options.TokenEconomy,
+		Units: groupPreparedFiles(files, resolver),
 	})
 }
 
@@ -128,8 +129,8 @@ func buildScan(ctx context.Context, repo string, options BuildOptions, runner *g
 	}
 	return Prepare(repo, PrepareInput{
 		Mode: ModeScan, Revision: gitRevision(ctx, repo), Background: options.Background,
-		Profile: options.Profile,
-		Units:   groupPreparedFiles(files, resolver),
+		Profile: options.Profile, TokenEconomy: options.TokenEconomy,
+		Units: groupPreparedFiles(files, resolver),
 	})
 }
 

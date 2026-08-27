@@ -1,20 +1,19 @@
 ---
 name: agent-code-review
-description: Review workspace changes, branches, commits, files, or directories with the local acr CLI while the active coding agent performs all LLM reasoning. Use when the user asks for an ACR review or a provider-free structured code review.
+description: Review workspace changes, branches, commits, files, or directories with the local acr CLI while the active coding agent performs all reasoning. Use for ACR reviews or provider-free, phased code review.
 license: Apache-2.0
 metadata:
   author: agent-code-review contributors
-  version: "1.4.0"
+  version: "1.5.0"
 ---
 
 # Agent Code Review
 
-Use `acr` as an evidence-driven, independent code-review workflow. `acr` performs file selection, rule resolution, snapshotting, validation, and rendering; it never supplies or calls a model.
+Use `acr` to enforce evidence-backed review phases. The active host model reasons; `acr` selects code, freezes evidence, controls barriers, validates results, and renders Markdown. Never request a model API key.
 
-## Workflow
+## Run the review
 
-1. Verify `acr` is available with `acr version`. If unavailable, report that the local CLI must be installed; do not request an API key.
-2. Prepare the requested target with the default `deep` profile. Use `standard` only when the user explicitly wants a fast, lightweight review:
+1. Verify `acr version`. Prepare the requested target. Deep is the default; use standard only when explicitly requested:
 
    ```bash
    acr review prepare --profile deep
@@ -23,58 +22,34 @@ Use `acr` as an evidence-driven, independent code-review workflow. `acr` perform
    acr review prepare --profile deep --path <file-or-directory>
    ```
 
-3. If this task also authored or fixed the change, keep it separate from the reviewer. Generate a portable reviewer prompt:
+   When the user requests token economy, add `--caveman` and optional `--caveman-level lite|full|ultra`. If the `caveman` skill is installed, invoke it at that intensity and record phase communication backend `skill`; otherwise obey the compact prompt and record `compact_fallback`. Compression must not reduce inspection, evidence, or critique.
+
+2. For deep review, loop until `acr review phase status --session <id>` reports `ready`:
 
    ```bash
-   acr review handoff --session <session_id>
+   acr review phase next --session <id> --worker <worker> --format json
+   # Inspect code and fill the returned phase input file.
+   acr review phase submit --session <id> --task <task-id> --input <phase-input>
    ```
 
-   Give that prompt to a separate reviewer task or host subagent when available. The reviewer must not rely on conclusions from the author task. If this task was opened solely to review the change and has no authoring context, it is already the independent reviewer; do not create another task. If the host cannot create a separate task, disclose that the review is not independent and still complete all deep-profile passes.
-4. Run `acr review brief --session <session_id>` instead of printing the raw `request.json`, then run `acr review draft --session <session_id>` to create the non-overwriting submission form. The brief is the compact checklist of unit IDs, paths, changed/deleted-line anchors, rules, focused risk questions, categories, and passes. A risk question is a search lead, not a presumed defect. Fill the draft by inspecting the changed code, its callee/callers, relevant tests, and nearby invariants. Complete every required pass: invariants, async/dependency order, API contracts, lifecycle/ownership, verification, and false-positive critique.
-5. Report only concrete defects. Create the returned `findings_path` as JSON using this shape:
+   Complete barriers in order: `intent`, `impact`, `candidates`, `critique`, `finalize`. Keep the same host, model label, and opaque context ID for intent, impact, candidates, and finalize. Inspect every unit and answer every deterministic risk question. Candidate IDs must link known invariants/questions, anchor changed lines, and cite exact evidence. Empty candidate sets need explicit coverage.
 
-   ```json
-   {
-     "protocol_version": "1",
-     "session_id": "<session_id>",
-     "question_resolutions": [
-       {
-         "question_id": "question-0001",
-         "outcome": "finding",
-         "evidence": "The callee rejects a missing apiUrl and this boot path always executes.",
-         "finding_index": 0
-       },
-       {
-         "question_id": "question-0002",
-         "outcome": "no_finding",
-         "evidence": "The removed registration is replaced by module initialization at server/start.ts:44."
-       }
-     ],
-     "findings": [
-       {
-         "unit_id": "unit-0001",
-         "file": "relative/path.go",
-         "start_line": 12,
-         "end_line": 12,
-         "severity": "high",
-         "category": "bug",
-         "explanation": "Concise defect description.",
-         "evidence": "Why this code produces the defect.",
-         "suggested_fix": "Optional remediation.",
-         "confidence": 0.9
-       }
-     ]
-   }
-   ```
+3. Critique every candidate blind to primary identity and confidence. Use the same host/model in a fresh context ID when the host supports an isolated reviewer task or subagent. Return that task's phase JSON to the orchestrator for submission, then resume the primary context for finalize. If isolation is unavailable, use the primary context with `critic_mode: "same_context"`; never label it independent. Units without candidates use `critic_mode: "not_required"`.
 
-   Resolve each generated question exactly once. Outcomes are `finding` (with a zero-based `finding_index`) or `no_finding`; both require concrete evidence. Use one of the categories listed in the brief: `bug`, `security`, `performance`, `maintainability`, `test`, `style`, `documentation`, or `other`. Classify correctness defects as `bug`; ACR also normalizes `correctness` to `bug`. Findings about removed behavior may anchor to the nearest target-side line identified by the brief. An empty `findings` array is valid when every question is resolved as `no_finding`.
-
-6. Validate and immediately render the response:
+4. After finalize, create the final transport:
 
    ```bash
-   acr review submit --session <session_id> --input <findings_path> --render
+   acr review draft --session <id>
    ```
 
-   Rejected submissions return machine-readable JSON; repair only those entries and rerun the same command once. Successful submission returns the complete Markdown report with one repair prompt beneath each finding by default. Present that command output directly. Never stop at a validation summary, show a render command as the next step, or ask the user to generate the report. Use `--fix-prompt combined` only when the user explicitly prefers one prompt for all findings. Stop and report remaining validation errors after the second failed submission.
+   Preserve its candidate dispositions. Add exactly one finding for each `submit` disposition and none for `drop`. Every finding needs `candidate_id`, unit, safe relative path, changed-line range, allowed severity/category, clear explanation/evidence, and confidence. Resolve each generated question exactly once as `finding` with zero-based `finding_index`, or `no_finding`, with concrete evidence.
 
-Do not configure OpenAI, Anthropic, or another provider. The model active in Codex, Cursor, Claude Code, or the current host is the reviewer. Do not modify source files unless the user separately asks to fix validated findings. This workflow improves review discipline and independence; it does not guarantee a stronger model than the host's reviewer.
+5. Validate and render immediately:
+
+   ```bash
+   acr review submit --session <id> --input <findings-path> --render
+   ```
+
+   Repair machine-readable rejection JSON once. On success, present the emitted Markdown directly; never leave a render command for the user. Per-finding fix prompts are default; use `--fix-prompt combined` only when requested.
+
+Standard and protocol-1 sessions use the legacy brief/draft/submit flow. Review is read-only. Do not modify source unless the user separately asks to fix validated findings.
