@@ -31,3 +31,5 @@ Copy this directory to Cursor's local plugin location. The `.cursor-plugin/plugi
 The `claude-code` directory supplies `/agent-code-review:review`, backed by the same prepare–submit protocol.
 
 When the current task also authored the change, the plugin prepares an immutable packet and produces an `acr review handoff` prompt for a separate reviewer task or host subagent. A task opened solely for review is already independent. All integrations remain read-only during review. Fixes require a separate explicit request.
+
+Rendered reports include one copyable, narrowly scoped repair prompt per validated finding by default. A combined prompt remains available through `acr review render --fix-prompt combined`.

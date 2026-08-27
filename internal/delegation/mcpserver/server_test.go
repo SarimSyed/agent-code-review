@@ -120,6 +120,44 @@ func TestMCPHandlersCompleteProviderFreeRoundTrip(t *testing.T) {
 	}
 }
 
+func TestReviewRenderIncludesPerFindingFixPrompt(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repo, "app.go"), []byte("package app\n"), 0o600); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+	request, err := delegation.Prepare(repo, delegation.PrepareInput{
+		Mode: delegation.ModeScan,
+		Units: []delegation.PreparedUnit{{
+			ID: "unit-1", Files: []delegation.PreparedFile{{Path: "app.go"}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	if _, err := delegation.Submit(repo, request.SessionID, delegation.Submission{
+		ProtocolVersion: delegation.ProtocolVersion,
+		SessionID:       request.SessionID,
+		Findings: []delegation.Finding{{
+			UnitID: "unit-1", File: "app.go", StartLine: 1, EndLine: 1,
+			Severity: "medium", Category: "bug", Explanation: "A validated problem.",
+			Evidence: "The source demonstrates it.", Confidence: 0.9,
+		}},
+	}); err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+
+	value, err := handleRender(context.Background(), rawJSON(t, map[string]any{
+		"repo": repo, "session_id": request.SessionID, "format": "markdown", "fix_prompt": "per-finding",
+	}))
+	if err != nil {
+		t.Fatalf("review_render: %v", err)
+	}
+	content := value.(map[string]string)["content"]
+	if !strings.Contains(content, "Copyable fix prompt") || !strings.Contains(content, "Work on exactly one validated ACR finding") {
+		t.Fatalf("rendered content missing fix prompt:\n%s", content)
+	}
+}
+
 func rawJSON(t *testing.T, value any) json.RawMessage {
 	t.Helper()
 	data, err := json.Marshal(value)

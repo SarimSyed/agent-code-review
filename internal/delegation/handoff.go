@@ -41,6 +41,6 @@ func HandoffPrompt(request *Request) (string, error) {
 	fmt.Fprintf(&out, "acr review brief --repo %s --session %s\n", request.Repository.Root, request.SessionID)
 	fmt.Fprintf(&out, "acr review draft --repo %s --session %s\n", request.Repository.Root, request.SessionID)
 	fmt.Fprintf(&out, "acr review submit --repo %s --session %s --input %s\n", request.Repository.Root, request.SessionID, filepath.Join(dir, FindingsFileName))
-	fmt.Fprintf(&out, "acr review render --repo %s --session %s --format markdown\n", request.Repository.Root, request.SessionID)
+	fmt.Fprintf(&out, "acr review render --repo %s --session %s --format markdown --fix-prompt per-finding\n", request.Repository.Root, request.SessionID)
 	return out.String(), nil
 }

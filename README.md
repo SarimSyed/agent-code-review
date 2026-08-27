@@ -47,7 +47,12 @@ acr review prepare --profile deep --path src
 
 # After the active agent writes findings.json
 acr review submit --session <id> --input <findings-path>
-acr review render --session <id> --format markdown
+
+# Recommended: readable report with one focused repair prompt per finding
+acr review render --session <id> --format markdown --fix-prompt per-finding
+
+# Optional: one prompt containing all validated findings
+acr review render --session <id> --format markdown --fix-prompt combined
 
 # Read the compact agent-safe manifest; do not print the full request packet
 acr review brief --session <id>
@@ -60,6 +65,8 @@ acr review handoff --session <id>
 ```
 
 Prepared sessions live in the ignored `.acr/sessions/` directory. Review preparation and validation do not modify source files.
+
+Fix prompts are generated deterministically from validated findings and do not call a model. Per-finding mode is recommended because it keeps each repair narrowly scoped; combined mode is available for agents that can safely manage a larger context.
 
 Deep briefs contain focused review questions for risky diff shapes such as sequential work moved into concurrency, removed call arguments, and removed listener or initialization calls. These questions are leads for the active model to verify, not automatic findings. Submission requires an evidence-backed resolution for every generated question, which makes skipped risk areas visible while preserving model judgment.
 

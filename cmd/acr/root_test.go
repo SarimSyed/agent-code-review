@@ -96,6 +96,10 @@ func TestReviewPrepareSubmitAndRender(t *testing.T) {
 	if !strings.Contains(rendered, "A test finding.") || !strings.Contains(rendered, "app.go:2") {
 		t.Fatalf("unexpected render output:\n%s", rendered)
 	}
+	withFixPrompt := string(executeCLI(t, "review", "render", "--repo", repo, "--session", prepared.SessionID, "--format", "markdown", "--fix-prompt", "per-finding"))
+	if !strings.Contains(withFixPrompt, "Copyable fix prompt") || !strings.Contains(withFixPrompt, "Work on exactly one validated ACR finding") {
+		t.Fatalf("rendered output missing per-finding fix prompt:\n%s", withFixPrompt)
+	}
 
 	handoff := string(executeCLI(t, "review", "handoff", "--repo", repo, "--session", prepared.SessionID))
 	if !strings.Contains(handoff, "independent reviewer") || !strings.Contains(handoff, prepared.SessionID) {

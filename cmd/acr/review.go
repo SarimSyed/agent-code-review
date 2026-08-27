@@ -224,7 +224,7 @@ func newSubmitCommand(options *reviewCLIOptions) *cobra.Command {
 }
 
 func newRenderCommand(options *reviewCLIOptions) *cobra.Command {
-	var sessionID, format string
+	var sessionID, format, fixPrompt string
 	cmd := &cobra.Command{
 		Use:   "render",
 		Short: "Render a validated review result",
@@ -243,9 +243,14 @@ func newRenderCommand(options *reviewCLIOptions) *cobra.Command {
 			}
 			switch strings.ToLower(format) {
 			case "json":
+				if fixPrompt != "" {
+					return fmt.Errorf("--fix-prompt requires --format markdown")
+				}
 				return writeCommandJSON(cmd, result)
 			case "markdown", "md":
-				markdown, err := delegation.RenderMarkdown(*result)
+				markdown, err := delegation.RenderMarkdownWithOptions(*result, delegation.RenderMarkdownOptions{
+					FixPromptMode: delegation.FixPromptMode(strings.ToLower(fixPrompt)),
+				})
 				if err != nil {
 					return err
 				}
@@ -258,6 +263,7 @@ func newRenderCommand(options *reviewCLIOptions) *cobra.Command {
 	}
 	cmd.Flags().StringVar(&sessionID, "session", "", "validated session id")
 	cmd.Flags().StringVar(&format, "format", "markdown", "output format: markdown or json")
+	cmd.Flags().StringVar(&fixPrompt, "fix-prompt", "", "include copyable fix prompts: per-finding or combined (Markdown only)")
 	return cmd
 }
 

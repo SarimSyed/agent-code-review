@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/alibaba/open-code-review/internal/delegation"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -77,6 +78,7 @@ type renderArgs struct {
 	Repo      string `json:"repo"`
 	SessionID string `json:"session_id"`
 	Format    string `json:"format,omitempty"`
+	FixPrompt string `json:"fix_prompt,omitempty"`
 }
 
 func handlePrepare(ctx context.Context, raw json.RawMessage) (any, error) {
@@ -181,13 +183,18 @@ func handleRender(_ context.Context, raw json.RawMessage) (any, error) {
 		return nil, err
 	}
 	if args.Format == "" || args.Format == "markdown" || args.Format == "md" {
-		markdown, err := delegation.RenderMarkdown(*result)
+		markdown, err := delegation.RenderMarkdownWithOptions(*result, delegation.RenderMarkdownOptions{
+			FixPromptMode: delegation.FixPromptMode(strings.ToLower(args.FixPrompt)),
+		})
 		if err != nil {
 			return nil, err
 		}
 		return map[string]string{"format": "markdown", "content": markdown}, nil
 	}
 	if args.Format == "json" {
+		if args.FixPrompt != "" {
+			return nil, fmt.Errorf("fix_prompt requires Markdown format")
+		}
 		return result, nil
 	}
 	return nil, fmt.Errorf("unsupported format %q", args.Format)
@@ -247,7 +254,8 @@ func unitSchema() map[string]any {
 func renderSchema() map[string]any {
 	return objectSchema(map[string]any{
 		"repo": map[string]any{"type": "string"}, "session_id": map[string]any{"type": "string"},
-		"format": map[string]any{"type": "string", "enum": []string{"markdown", "md", "json"}},
+		"format":     map[string]any{"type": "string", "enum": []string{"markdown", "md", "json"}},
+		"fix_prompt": map[string]any{"type": "string", "enum": []string{"per-finding", "combined"}},
 	}, []string{"repo", "session_id"})
 }
 
