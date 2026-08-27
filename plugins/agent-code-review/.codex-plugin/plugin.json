@@ -1,6 +1,6 @@
 {
   "name": "agent-code-review",
-  "version": "1.3.2",
+  "version": "1.4.0",
   "description": "Amplify the active Codex model with focused risk detection and validated deep review.",
   "author": {
     "name": "Agent Code Review Contributors"
@@ -28,7 +28,8 @@
     "defaultPrompt": [
       "Use Agent Code Review to independently deep-review my current changes.",
       "Use Agent Code Review to independently deep-review this branch against main.",
-      "Use Agent Code Review to deeply review this directory."
+      "Use Agent Code Review to deeply review this directory.",
+      "Benchmark Agent Code Review against a native review of this PR."
     ]
   }
 }

@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/SarimSyed/agent-code-review/schemas/benchmark-reviewer-submission-v1.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["protocol_version", "run_id", "task_id", "executor", "findings"],
+  "properties": {
+    "protocol_version": { "const": "1" },
+    "run_id": { "type": "string", "minLength": 1 },
+    "task_id": { "type": "string", "minLength": 1 },
+    "executor": { "$ref": "#/$defs/executor" },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["file", "start_line", "end_line", "explanation"],
+        "properties": {
+          "id": { "type": "string" },
+          "title": { "type": "string" },
+          "description": { "type": "string" },
+          "explanation": { "type": "string" },
+          "evidence": { "type": "string" },
+          "file": { "type": "string" },
+          "start_line": { "type": "integer", "minimum": 1 },
+          "end_line": { "type": "integer", "minimum": 1 },
+          "severity": { "type": "string" },
+          "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "executor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["host", "model", "context_id"],
+      "properties": {
+        "host": { "type": "string", "minLength": 1 },
+        "model": { "type": "string", "minLength": 1 },
+        "context_id": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

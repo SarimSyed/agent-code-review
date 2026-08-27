@@ -20,6 +20,7 @@ Install this directory as a Codex plugin or marketplace entry, enable **Agent Co
 @Agent Code Review perform an independent deep review of my current changes
 @Agent Code Review perform an independent deep review of this branch against main
 @Agent Code Review perform a deep review of src
+@Agent Code Review benchmark ACR against a native review on this PR
 ```
 
 ## Cursor
@@ -28,8 +29,10 @@ Copy this directory to Cursor's local plugin location. The `.cursor-plugin/plugi
 
 ## Claude Code
 
-The `claude-code` directory supplies `/agent-code-review:review`, backed by the same prepare–submit protocol.
+The `claude-code` directory supplies `/agent-code-review:review` and `/agent-code-review:benchmark`, backed by the same provider-free protocols.
 
 When the current task also authored the change, the plugin prepares an immutable packet and produces an `acr review handoff` prompt for a separate reviewer task or host subagent. A task opened solely for review is already independent. All integrations remain read-only during review. Fixes require a separate explicit request.
 
 The plugin uses `acr review submit --render`, so successful validation immediately emits the complete report with one copyable, narrowly scoped repair prompt per finding. A combined prompt remains available through `--fix-prompt combined`.
+
+The benchmark skill uses fresh reviewer contexts for the native and ACR arms, then fresh blinded judges for ambiguous matches. Its final submission emits the comparison report automatically.

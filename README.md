@@ -90,7 +90,29 @@ acr mcp
 
 ## Benchmarking review quality
 
-`acr benchmark score` compares a review result with anchored ground truth from a compatible JSONL dataset, without calling a model or changing source files:
+The benchmark runner compares a neutral review with an ACR deep review performed by the same active host model in separate contexts. Ambiguous semantic matches are decided by two blinded judge contexts, with a third only when they disagree. The CLI never calls a model.
+
+```bash
+# Fetch the pinned public corpus and record its revision, license, and checksum
+acr benchmark dataset fetch qodo --output qodo-benchmark.json
+
+# Prepare one bounded paired experiment
+acr benchmark prepare \
+  --dataset qodo-benchmark.json \
+  --pr https://github.com/owner/repository/pull/123
+
+# Agent integrations loop over these commands in fresh contexts
+acr benchmark next --run <id> --worker <unique-worker>
+acr benchmark submit --run <id> --task <task-id> --input <result.json>
+
+# Inspect or re-render an interrupted/completed run
+acr benchmark status --run <id>
+acr benchmark report --run <id> --format markdown
+```
+
+The final submission automatically emits the Markdown comparison report. Runs live under `.acr/benchmarks/runs/`; Git mirrors use the OS user cache. Use `--repo` for an existing one-case checkout or `--checkout-map` for batch overrides.
+
+The original one-result scorer remains available:
 
 ```bash
 acr benchmark score \
@@ -99,7 +121,7 @@ acr benchmark score \
   --findings .acr/sessions/<id>/result.json
 ```
 
-It reports precision, recall, F1, missed issues, and extra findings. The command accepts both ACR `result.json` files and a minimal `{ "findings": [...] }` document for a direct-agent baseline.
+Reports include micro precision, recall, F1, macro F1, paired outcomes, matched/missed/extra findings, setup coverage, and a deterministic bootstrap confidence interval when at least ten pairs complete. The compatibility scorer accepts both ACR `result.json` and a minimal `{ "findings": [...] }` document.
 
 ## License
 

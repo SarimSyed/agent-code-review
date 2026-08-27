@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/SarimSyed/agent-code-review/schemas/benchmark-judge-submission-v1.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["protocol_version", "run_id", "task_id", "executor", "judgments"],
+  "properties": {
+    "protocol_version": { "const": "1" },
+    "run_id": { "type": "string", "minLength": 1 },
+    "task_id": { "type": "string", "minLength": 1 },
+    "executor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["host", "model", "context_id"],
+      "properties": {
+        "host": { "type": "string", "minLength": 1 },
+        "model": { "type": "string", "minLength": 1 },
+        "context_id": { "type": "string", "minLength": 1 }
+      }
+    },
+    "judgments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["pair_id", "decision", "rationale", "confidence"],
+        "properties": {
+          "pair_id": { "type": "string", "minLength": 1 },
+          "decision": { "enum": ["match", "no_match"] },
+          "rationale": { "type": "string", "minLength": 1 },
+          "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+        }
+      }
+    }
+  }
+}

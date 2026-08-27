@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/SarimSyed/agent-code-review/schemas/benchmark-run-v1.json",
+  "type": "object",
+  "required": ["protocol_version", "id", "created_at", "dataset", "seed", "trials", "workspace", "cases", "tasks"],
+  "properties": {
+    "protocol_version": { "const": "1" },
+    "id": { "type": "string", "minLength": 1 },
+    "created_at": { "type": "string", "format": "date-time" },
+    "dataset": { "type": "object" },
+    "seed": { "type": "integer" },
+    "trials": { "type": "integer", "minimum": 1 },
+    "workspace": { "type": "string" },
+    "cases": { "type": "array" },
+    "tasks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "case_id", "trial", "arm", "state", "base_sha", "head_sha", "prompt_path"],
+        "properties": {
+          "id": { "type": "string" },
+          "case_id": { "type": "string" },
+          "trial": { "type": "integer", "minimum": 1 },
+          "arm": { "enum": ["baseline", "acr", "judge"] },
+          "state": { "enum": ["queued", "claimed", "submitted", "needs_adjudication", "scored", "failed"] }
+        }
+      }
+    },
+    "evaluations": { "type": "array" },
+    "setup_failures": { "type": "array" }
+  }
+}

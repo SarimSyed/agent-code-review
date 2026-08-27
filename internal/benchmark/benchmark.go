@@ -15,30 +15,40 @@ import (
 )
 
 type Finding struct {
-	Title       string `json:"title,omitempty"`
-	Description string `json:"description,omitempty"`
-	Explanation string `json:"explanation,omitempty"`
-	File        string `json:"file,omitempty"`
-	StartLine   int    `json:"start_line,omitempty"`
-	EndLine     int    `json:"end_line,omitempty"`
+	ID          string  `json:"id,omitempty"`
+	Title       string  `json:"title,omitempty"`
+	Description string  `json:"description,omitempty"`
+	Explanation string  `json:"explanation,omitempty"`
+	Evidence    string  `json:"evidence,omitempty"`
+	File        string  `json:"file,omitempty"`
+	StartLine   int     `json:"start_line,omitempty"`
+	EndLine     int     `json:"end_line,omitempty"`
+	Severity    string  `json:"severity,omitempty"`
+	Confidence  float64 `json:"confidence,omitempty"`
 }
 
 type Case struct {
+	ID         string    `json:"id,omitempty"`
 	Repository string    `json:"repository"`
 	PRURL      string    `json:"pr_url"`
+	BaseSHA    string    `json:"base_sha,omitempty"`
+	HeadSHA    string    `json:"head_sha,omitempty"`
 	Expected   []Finding `json:"expected"`
 }
 
 type Score struct {
-	Expected           int       `json:"expected"`
-	UnscorableExpected int       `json:"unscorable_expected"`
-	Predicted          int       `json:"predicted"`
-	Matched            int       `json:"matched"`
-	Precision          float64   `json:"precision"`
-	Recall             float64   `json:"recall"`
-	F1                 float64   `json:"f1"`
-	Missed             []Finding `json:"missed"`
-	Extra              []Finding `json:"extra"`
+	Expected           int            `json:"expected"`
+	UnscorableExpected int            `json:"unscorable_expected"`
+	Predicted          int            `json:"predicted"`
+	Matched            int            `json:"matched"`
+	UnresolvedPairs    int            `json:"unresolved_pairs"`
+	Complete           bool           `json:"complete"`
+	Precision          float64        `json:"precision"`
+	Recall             float64        `json:"recall"`
+	F1                 float64        `json:"f1"`
+	Missed             []Finding      `json:"missed"`
+	Extra              []Finding      `json:"extra"`
+	Matches            []FindingMatch `json:"matches,omitempty"`
 }
 
 type qodoCase struct {
@@ -113,107 +123,6 @@ func LoadFindings(path string) ([]Finding, error) {
 		}
 	}
 	return document.Findings, nil
-}
-
-// ScoreFindings matches each predicted finding to at most one ground-truth
-// issue with the same file and an overlapping positive line range.
-func ScoreFindings(expected, predicted []Finding) Score {
-	result := Score{Missed: make([]Finding, 0), Extra: make([]Finding, 0), Predicted: len(predicted)}
-	eligible := make([]Finding, 0, len(expected))
-	for _, finding := range expected {
-		finding.File = cleanPath(finding.File)
-		if finding.StartLine < 1 || finding.EndLine < finding.StartLine || finding.File == "" {
-			result.UnscorableExpected++
-			continue
-		}
-		eligible = append(eligible, finding)
-	}
-	result.Expected = len(eligible)
-	matched := make([]bool, len(eligible))
-	for _, finding := range predicted {
-		finding.File = cleanPath(finding.File)
-		if finding.EndLine == 0 {
-			finding.EndLine = finding.StartLine
-		}
-		match := -1
-		bestScore := -1 << 30
-		for i, target := range eligible {
-			if matched[i] || target.File != finding.File || finding.StartLine < 1 || finding.EndLine < finding.StartLine {
-				continue
-			}
-			if finding.StartLine <= target.EndLine && target.StartLine <= finding.EndLine {
-				score := findingMatchScore(finding, target)
-				if score > bestScore {
-					match, bestScore = i, score
-				}
-			}
-		}
-		if match < 0 {
-			result.Extra = append(result.Extra, finding)
-			continue
-		}
-		matched[match] = true
-		result.Matched++
-	}
-	for i, target := range eligible {
-		if !matched[i] {
-			result.Missed = append(result.Missed, target)
-		}
-	}
-	if result.Predicted > 0 {
-		result.Precision = float64(result.Matched) / float64(result.Predicted)
-	}
-	if result.Expected > 0 {
-		result.Recall = float64(result.Matched) / float64(result.Expected)
-	}
-	if result.Precision+result.Recall > 0 {
-		result.F1 = 2 * result.Precision * result.Recall / (result.Precision + result.Recall)
-	}
-	return result
-}
-
-// findingMatchScore resolves overlapping ground-truth line ranges. Textual
-// overlap is the primary signal; a narrower annotated range wins only when
-// the two findings carry the same textual evidence.
-func findingMatchScore(predicted, expected Finding) int {
-	shared := sharedTokens(
-		predicted.Title+" "+predicted.Description+" "+predicted.Explanation,
-		expected.Title+" "+expected.Description,
-	)
-	width := expected.EndLine - expected.StartLine
-	if width < 0 {
-		width = 0
-	}
-	return shared*10000 - width
-}
-
-func sharedTokens(left, right string) int {
-	leftTokens := reviewTokens(left)
-	rightTokens := reviewTokens(right)
-	shared := 0
-	for token := range leftTokens {
-		if rightTokens[token] {
-			shared++
-		}
-	}
-	return shared
-}
-
-func reviewTokens(text string) map[string]bool {
-	stop := map[string]bool{
-		"and": true, "are": true, "but": true, "for": true, "from": true,
-		"has": true, "have": true, "its": true, "not": true, "the": true,
-		"this": true, "that": true, "with": true,
-	}
-	returnTokens := map[string]bool{}
-	for _, token := range strings.FieldsFunc(strings.ToLower(text), func(r rune) bool {
-		return (r < 'a' || r > 'z') && (r < '0' || r > '9')
-	}) {
-		if len(token) >= 3 && !stop[token] {
-			returnTokens[token] = true
-		}
-	}
-	return returnTokens
 }
 
 func cleanPath(path string) string {

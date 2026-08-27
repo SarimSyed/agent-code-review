@@ -253,6 +253,93 @@ func TestBenchmarkScoreEvaluatesQodoCase(t *testing.T) {
 	}
 }
 
+func TestBenchmarkPrepareNextSubmitAndReport(t *testing.T) {
+	repo := initCLITestRepo(t)
+	baseSHA := strings.TrimSpace(runCLIGit(t, repo, "rev-parse", "HEAD"))
+	if err := os.WriteFile(filepath.Join(repo, "app.go"), []byte("package app\nfunc Value() int { return 2 }\n"), 0o644); err != nil {
+		t.Fatalf("modify source: %v", err)
+	}
+	runCLIGit(t, repo, "add", "app.go")
+	runCLIGit(t, repo, "commit", "-m", "change")
+	headSHA := strings.TrimSpace(runCLIGit(t, repo, "rev-parse", "HEAD"))
+	workspace := t.TempDir()
+	prURL := "https://github.com/example/project/pull/7"
+	manifestPath := filepath.Join(workspace, "manifest.json")
+	if err := benchmark.SaveManifest(manifestPath, benchmark.Manifest{
+		ProtocolVersion: benchmark.BenchmarkProtocolVersion,
+		Dataset:         benchmark.DatasetMetadata{ID: "fixture", Version: "1"},
+		Cases: []benchmark.Case{{
+			ID: "case-1", Repository: repo, PRURL: prURL, BaseSHA: baseSHA, HeadSHA: headSHA,
+			Expected: []benchmark.Finding{{Title: "Wrong return value", Description: "Value returns two instead of one.", File: "app.go", StartLine: 2, EndLine: 2}},
+		}},
+	}); err != nil {
+		t.Fatalf("SaveManifest: %v", err)
+	}
+
+	prepareOutput := executeCLI(t, "benchmark", "prepare", "--workspace", workspace, "--dataset", manifestPath, "--pr", prURL, "--repo", repo)
+	var prepared benchmarkPrepareOutput
+	if err := json.Unmarshal(prepareOutput, &prepared); err != nil {
+		t.Fatalf("decode benchmark prepare: %v\n%s", err, prepareOutput)
+	}
+	if prepared.RunID == "" || prepared.Tasks != 2 || !strings.Contains(prepared.NextStep, "benchmark next") {
+		t.Fatalf("unexpected benchmark prepare output: %#v", prepared)
+	}
+
+	for index := 0; index < 2; index++ {
+		nextOutput := executeCLI(t, "benchmark", "next", "--workspace", workspace, "--run", prepared.RunID, "--worker", "test-worker")
+		var claimed benchmarkNextOutput
+		if err := json.Unmarshal(nextOutput, &claimed); err != nil {
+			t.Fatalf("decode benchmark next: %v\n%s", err, nextOutput)
+		}
+		if claimed.Task.ID == "" || claimed.Prompt == "" || claimed.Task.State != benchmark.TaskClaimed {
+			t.Fatalf("unexpected claimed task: %#v", claimed)
+		}
+		submission := benchmark.TaskSubmission{
+			ProtocolVersion: benchmark.BenchmarkProtocolVersion, RunID: prepared.RunID, TaskID: claimed.Task.ID,
+			Executor: benchmark.Executor{Host: "codex", Model: "sol", ContextID: "cli-context-" + claimed.Task.Arm},
+			Findings: []benchmark.Finding{{Title: "Wrong return value", Explanation: "Value returns two instead of one.", File: "app.go", StartLine: 2, EndLine: 2}},
+		}
+		input := filepath.Join(workspace, claimed.Task.ID+".json")
+		data, err := json.Marshal(submission)
+		if err != nil {
+			t.Fatalf("marshal task submission: %v", err)
+		}
+		if err := os.WriteFile(input, data, 0o600); err != nil {
+			t.Fatalf("write task submission: %v", err)
+		}
+		output := executeCLI(t, "benchmark", "submit", "--workspace", workspace, "--run", prepared.RunID, "--task", claimed.Task.ID, "--input", input)
+		if index == 1 && !strings.Contains(string(output), "# ACR Benchmark Report") {
+			t.Fatalf("final submission did not return the report:\n%s", output)
+		}
+	}
+
+	statusOutput := executeCLI(t, "benchmark", "status", "--workspace", workspace, "--run", prepared.RunID)
+	if !strings.Contains(string(statusOutput), `"scored": 2`) {
+		t.Fatalf("unexpected benchmark status: %s", statusOutput)
+	}
+	rendered := executeCLI(t, "benchmark", "report", "--workspace", workspace, "--run", prepared.RunID)
+	if !strings.Contains(string(rendered), "**Result: Tie**") {
+		t.Fatalf("unexpected benchmark report:\n%s", rendered)
+	}
+}
+
+func TestBenchmarkPrepareRejectsUnboundedRuns(t *testing.T) {
+	workspace := t.TempDir()
+	manifestPath := filepath.Join(workspace, "manifest.json")
+	if err := benchmark.SaveManifest(manifestPath, benchmark.Manifest{
+		ProtocolVersion: benchmark.BenchmarkProtocolVersion,
+		Dataset:         benchmark.DatasetMetadata{ID: "fixture", Version: "1"},
+		Cases:           []benchmark.Case{{ID: "case-1", Repository: "repo", PRURL: "https://github.com/example/project/pull/1"}},
+	}); err != nil {
+		t.Fatalf("SaveManifest: %v", err)
+	}
+	cmd := newRootCommand()
+	cmd.SetArgs([]string{"benchmark", "prepare", "--workspace", workspace, "--dataset", manifestPath})
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "--pr, --limit, or --all") {
+		t.Fatalf("unbounded prepare error = %v", err)
+	}
+}
+
 func executeCLI(t *testing.T, args ...string) []byte {
 	t.Helper()
 	cmd := newRootCommand()
@@ -285,4 +372,14 @@ func initCLITestRepo(t *testing.T) string {
 		}
 	}
 	return repo
+}
+
+func runCLIGit(t *testing.T, repo string, arguments ...string) string {
+	t.Helper()
+	command := exec.Command("git", append([]string{"-C", repo}, arguments...)...)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s: %v: %s", strings.Join(arguments, " "), err, output)
+	}
+	return string(output)
 }

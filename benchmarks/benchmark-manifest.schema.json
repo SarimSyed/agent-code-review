@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/SarimSyed/agent-code-review/schemas/benchmark-manifest-v1.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["protocol_version", "dataset", "cases"],
+  "properties": {
+    "protocol_version": { "const": "1" },
+    "dataset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "version"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "version": { "type": "string", "minLength": 1 },
+        "source_url": { "type": "string" },
+        "revision": { "type": "string" },
+        "sha256": { "type": "string", "pattern": "^[a-fA-F0-9]{64}$" },
+        "license": { "type": "string" }
+      }
+    },
+    "cases": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "repository", "pr_url", "expected"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "repository": { "type": "string", "minLength": 1 },
+          "pr_url": { "type": "string", "minLength": 1 },
+          "base_sha": { "type": "string" },
+          "head_sha": { "type": "string" },
+          "expected": { "$ref": "#/$defs/findings" }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "title": { "type": "string" },
+          "description": { "type": "string" },
+          "file": { "type": "string" },
+          "start_line": { "type": "integer", "minimum": 0 },
+          "end_line": { "type": "integer", "minimum": 0 }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/SarimSyed/agent-code-review/schemas/benchmark-report-v1.json",
+  "type": "object",
+  "required": ["protocol_version", "run_id", "complete", "winner", "baseline", "acr", "f1_delta", "coverage", "pairs"],
+  "properties": {
+    "protocol_version": { "const": "1" },
+    "run_id": { "type": "string" },
+    "complete": { "type": "boolean" },
+    "winner": { "enum": ["baseline", "acr", "tie", "incomplete"] },
+    "baseline": { "$ref": "#/$defs/aggregate" },
+    "acr": { "$ref": "#/$defs/aggregate" },
+    "f1_delta": { "type": "number" },
+    "coverage": { "type": "number", "minimum": 0, "maximum": 1 },
+    "pairs": { "type": "array" },
+    "confidence_95": { "type": "object" },
+    "setup_failures": { "type": "array" }
+  },
+  "$defs": {
+    "aggregate": {
+      "type": "object",
+      "required": ["expected", "predicted", "matched", "precision", "recall", "f1", "macro_f1"]
+    }
+  }
+}
