@@ -15,7 +15,7 @@
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/agent-code-review/agent-code-review.git"
+    "url": "git+https://github.com/SarimSyed/agent-code-review.git"
   },
   "publishConfig": {
     "access": "public"

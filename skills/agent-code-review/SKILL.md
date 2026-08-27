@@ -4,7 +4,7 @@ description: Review workspace changes, branches, commits, files, or directories 
 license: Apache-2.0
 metadata:
   author: agent-code-review contributors
-  version: "1.3.0"
+  version: "1.3.1"
 ---
 
 # Agent Code Review

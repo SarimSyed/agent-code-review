@@ -9,7 +9,7 @@
       "name": "agent-code-review",
       "source": "./plugins/agent-code-review/claude-code",
       "description": "Prepare and validate reviews locally while Claude Code performs the reasoning.",
-      "version": "1.3.0",
+      "version": "1.3.1",
       "license": "Apache-2.0"
     }
   ]

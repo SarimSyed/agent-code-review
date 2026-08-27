@@ -20,14 +20,14 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/agent-code-review/agent-code-review.git"
+    "url": "git+https://github.com/SarimSyed/agent-code-review.git"
   },
   "publishConfig": {
     "access": "public"
   },
   "acrConfig": {
-    "urlPattern": "https://github.com/agent-code-review/agent-code-review/releases/download/v{version}/acr-{os}-{arch}",
-    "checksumPattern": "https://github.com/agent-code-review/agent-code-review/releases/download/v{version}/sha256sum.txt"
+    "urlPattern": "https://github.com/SarimSyed/agent-code-review/releases/download/v{version}/acr-{os}-{arch}",
+    "checksumPattern": "https://github.com/SarimSyed/agent-code-review/releases/download/v{version}/sha256sum.txt"
   },
   "optionalDependencies": {
     "@agent-code-review/acr-darwin-arm64": "0.0.0",

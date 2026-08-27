@@ -1,13 +1,13 @@
 {
   "name": "agent-code-review",
   "displayName": "Agent Code Review",
-  "version": "1.3.0",
+  "version": "1.3.1",
   "description": "Provider-free independent deep code review performed by the active Cursor model.",
   "author": {
     "name": "Agent Code Review Contributors"
   },
-  "homepage": "https://github.com/agent-code-review/agent-code-review",
-  "repository": "https://github.com/agent-code-review/agent-code-review",
+  "homepage": "https://github.com/SarimSyed/agent-code-review",
+  "repository": "https://github.com/SarimSyed/agent-code-review",
   "license": "Apache-2.0",
   "keywords": [
     "code-review",
