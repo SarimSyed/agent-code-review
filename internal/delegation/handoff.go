@@ -23,6 +23,9 @@ func HandoffPrompt(request *Request) (string, error) {
 	if request.Instructions.ReviewProfile == ReviewProfileDeep && request.ProtocolVersion == ProtocolVersion {
 		return phasedHandoffPrompt(request, dir), nil
 	}
+	if request.Instructions.ReviewProfile == ReviewProfileAdaptive && request.ProtocolVersion == AdaptiveProtocolVersion {
+		return adaptiveHandoffPrompt(request, dir), nil
+	}
 	var out strings.Builder
 	fmt.Fprintln(&out, "You are the independent reviewer for this ACR session.")
 	fmt.Fprintln(&out, "Do not rely on conclusions from the author task. Do not modify source files.")
@@ -46,6 +49,20 @@ func HandoffPrompt(request *Request) (string, error) {
 	fmt.Fprintf(&out, "acr review submit --repo %s --session %s --input %s --render\n", request.Repository.Root, request.SessionID, filepath.Join(dir, FindingsFileName))
 	out.WriteString("On successful validation, present the Markdown emitted by that command. Do not stop at a validation summary or tell the user to run a render command.\n")
 	return out.String(), nil
+}
+
+func adaptiveHandoffPrompt(request *Request, dir string) string {
+	var out strings.Builder
+	fmt.Fprintln(&out, "You are the primary reviewer for this provider-free adaptive ACR session. Do not modify source files.")
+	fmt.Fprintf(&out, "Repository: %s\nSession: %s\nPacket: %s\n", request.Repository.Root, request.SessionID, filepath.Join(dir, RequestFileName))
+	fmt.Fprintln(&out, "Claim each stage with `phase next --all` and complete every returned submission draft in one model turn. Submit the ordered array with `phase submit --batch`.")
+	fmt.Fprintln(&out, "When critique is queued, use the same selected host/model in a fresh context. Use same_context only as an explicitly degraded fallback. Return resolve tasks to the original primary context.")
+	fmt.Fprintf(&out, "acr review phase next --repo %s --session %s --worker <context-id> --all\n", request.Repository.Root, request.SessionID)
+	fmt.Fprintf(&out, "acr review phase submit --repo %s --session %s --batch <submissions.json>\n", request.Repository.Root, request.SessionID)
+	fmt.Fprintf(&out, "acr review draft --repo %s --session %s\n", request.Repository.Root, request.SessionID)
+	fmt.Fprintf(&out, "acr review submit --repo %s --session %s --input %s --render\n", request.Repository.Root, request.SessionID, filepath.Join(dir, FindingsFileName))
+	out.WriteString("Present the emitted Markdown after successful validation.\n")
+	return out.String()
 }
 
 func phasedHandoffPrompt(request *Request, dir string) string {

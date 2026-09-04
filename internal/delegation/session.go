@@ -64,8 +64,12 @@ func Prepare(repo string, input PrepareInput) (*Request, error) {
 	if err != nil {
 		return nil, err
 	}
+	protocolVersion := ProtocolVersion
+	if profile == ReviewProfileAdaptive {
+		protocolVersion = AdaptiveProtocolVersion
+	}
 	request := &Request{
-		ProtocolVersion: ProtocolVersion,
+		ProtocolVersion: protocolVersion,
 		SessionID:       sessionID,
 		CreatedAt:       time.Now().UTC(),
 		Mode:            input.Mode,
@@ -126,7 +130,7 @@ func Prepare(repo string, input PrepareInput) (*Request, error) {
 		}
 		request.Units = append(request.Units, unit)
 	}
-	if request.Mode == ModeDiff && profile == ReviewProfileDeep {
+	if request.Mode == ModeDiff && (profile == ReviewProfileDeep || profile == ReviewProfileAdaptive) {
 		request.ReviewQuestions = generateReviewQuestions(request.Units)
 	}
 
@@ -192,7 +196,7 @@ func normalizeReviewProfile(value string) (string, error) {
 		return ReviewProfileDeep, nil
 	}
 	switch value {
-	case ReviewProfileStandard, ReviewProfileDeep:
+	case ReviewProfileStandard, ReviewProfileDeep, ReviewProfileAdaptive:
 		return value, nil
 	default:
 		return "", fmt.Errorf("unsupported review profile %q", value)
@@ -223,7 +227,7 @@ func LoadRequest(repo, sessionID string) (*Request, error) {
 	if err := readJSON(filepath.Join(SessionDir(repo, sessionID), RequestFileName), &request); err != nil {
 		return nil, err
 	}
-	if request.ProtocolVersion != ProtocolVersion && request.ProtocolVersion != LegacyProtocolVersion {
+	if request.ProtocolVersion != AdaptiveProtocolVersion && request.ProtocolVersion != ProtocolVersion && request.ProtocolVersion != LegacyProtocolVersion {
 		return nil, fmt.Errorf("unsupported request protocol %q", request.ProtocolVersion)
 	}
 	if request.SessionID != sessionID {
@@ -295,7 +299,7 @@ func LoadResult(repo, sessionID string) (*Result, error) {
 	if err := readJSON(filepath.Join(SessionDir(repo, sessionID), ResultFileName), &result); err != nil {
 		return nil, err
 	}
-	if result.ProtocolVersion != ProtocolVersion && result.ProtocolVersion != LegacyProtocolVersion {
+	if result.ProtocolVersion != AdaptiveProtocolVersion && result.ProtocolVersion != ProtocolVersion && result.ProtocolVersion != LegacyProtocolVersion {
 		return nil, fmt.Errorf("unsupported result protocol %q", result.ProtocolVersion)
 	}
 	if result.SessionID != sessionID {
@@ -333,9 +337,24 @@ func CreateSubmissionDraft(repo, sessionID string) (*Submission, string, error) 
 		sort.Slice(draft.CandidateDispositions, func(i, j int) bool {
 			return draft.CandidateDispositions[i].CandidateID < draft.CandidateDispositions[j].CandidateID
 		})
+	} else if request.ProtocolVersion == AdaptiveProtocolVersion && request.Instructions.ReviewProfile == ReviewProfileAdaptive {
+		workflow, err := LoadWorkflow(repo, sessionID)
+		if err != nil {
+			return nil, "", err
+		}
+		if workflow.State != WorkflowReady && workflow.State != WorkflowComplete {
+			return nil, "", fmt.Errorf("adaptive workflow phases are incomplete; run acr review phase next")
+		}
+		generated, err := adaptiveSubmission(request, workflow)
+		if err != nil {
+			return nil, "", err
+		}
+		draft = generated
 	}
-	for _, question := range request.ReviewQuestions {
-		draft.QuestionResolutions = append(draft.QuestionResolutions, QuestionResolution{QuestionID: question.ID})
+	if request.ProtocolVersion != AdaptiveProtocolVersion {
+		for _, question := range request.ReviewQuestions {
+			draft.QuestionResolutions = append(draft.QuestionResolutions, QuestionResolution{QuestionID: question.ID})
+		}
 	}
 	data, err := json.MarshalIndent(draft, "", "  ")
 	if err != nil {

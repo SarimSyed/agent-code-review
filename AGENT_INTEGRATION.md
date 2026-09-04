@@ -13,6 +13,8 @@ acr review draft --session <id>
 acr review submit --session <id> --input <findings_path> --render
 ```
 
+For an explicitly requested adaptive review, prepare with `--profile adaptive`, claim each whole stage with `phase next --all`, and submit the returned ordered drafts with `phase submit --batch <file>`. Keep the same selected host/model throughout, use a fresh context for critique, and return resolve tasks to the original primary context. `same_context` is an explicitly labeled degraded fallback.
+
 Successful submission emits the complete Markdown report with one copyable prompt per finding. Present that output immediately; do not ask the user to run a separate render command. Rejected submissions remain JSON so the agent can repair them once. Use `--fix-prompt combined` only when one combined repair prompt is preferred.
 
 Primary phases use one active-model context. Critique uses the same host/model in a fresh context when available, then finalize resumes the primary context. Same-context fallback is allowed but reported. Use `--caveman [--caveman-level lite|full|ultra]` for skill-backed or built-in compact communication without weakening phase requirements.
@@ -21,4 +23,4 @@ Use `--from/--to` for branch ranges, `--commit` for one commit, or `--path` for 
 
 ## MCP
 
-Configure the host to run `acr mcp` over stdio. It exposes prepare, `review_phase_next`, `review_phase_submit`, `review_phase_status`, briefing, drafts, request/unit retrieval, submit/validate, render, handoff, and sessions. MCP prepare accepts `caveman` and `caveman_level`. Set `render: true` on final submission so validated Markdown returns immediately.
+Configure the host to run `acr mcp` over stdio. It exposes prepare, `review_phase_next`, `review_phase_submit`, `review_phase_status`, briefing, drafts, request/unit retrieval, submit/validate, render, handoff, and sessions. MCP prepare accepts `caveman` and `caveman_level`; adaptive callers use `all: true` and the mutually exclusive `submissions` array. Set `render: true` on final submission so validated Markdown returns immediately.

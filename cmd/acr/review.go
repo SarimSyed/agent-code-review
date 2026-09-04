@@ -68,7 +68,7 @@ func newReviewCommand() *cobra.Command {
 	flags.StringSliceVar(&options.paths, "path", nil, "file or directory to scan; repeat for multiple paths")
 	flags.StringVar(&options.rulePath, "rule", "", "custom review rule file")
 	flags.StringVar(&options.background, "background", "", "requirements or business context")
-	flags.StringVar(&options.profile, "profile", delegation.ReviewProfileDeep, "review profile: deep or standard")
+	flags.StringVar(&options.profile, "profile", delegation.ReviewProfileDeep, "review profile: deep, adaptive, or standard")
 	flags.BoolVar(&options.caveman, "caveman", false, "use Caveman token-economy prompts")
 	flags.StringVar(&options.cavemanLevel, "caveman-level", delegation.CavemanFull, "Caveman intensity: lite, full, or ultra (requires --caveman)")
 	flags.IntVar(&options.maxGitProcs, "max-git-procs", 4, "maximum concurrent Git processes")
@@ -91,12 +91,16 @@ func newReviewCommand() *cobra.Command {
 }
 
 type phaseNextOutput struct {
-	ProtocolVersion string                      `json:"protocol_version"`
-	SessionID       string                      `json:"session_id"`
-	Task            delegation.PhaseTask        `json:"task"`
-	Prompt          string                      `json:"prompt"`
-	InputPath       string                      `json:"input_path"`
-	Submission      *delegation.PhaseSubmission `json:"submission"`
+	ProtocolVersion string                       `json:"protocol_version"`
+	SessionID       string                       `json:"session_id"`
+	Task            delegation.PhaseTask         `json:"task"`
+	Prompt          string                       `json:"prompt"`
+	InputPath       string                       `json:"input_path"`
+	Submission      *delegation.PhaseSubmission  `json:"submission"`
+	Tasks           []delegation.PhaseTask       `json:"tasks,omitempty"`
+	Prompts         []string                     `json:"prompts,omitempty"`
+	InputPaths      []string                     `json:"input_paths,omitempty"`
+	Submissions     []delegation.PhaseSubmission `json:"submissions,omitempty"`
 }
 
 func newPhaseCommand(options *reviewCLIOptions) *cobra.Command {
@@ -107,6 +111,7 @@ func newPhaseCommand(options *reviewCLIOptions) *cobra.Command {
 
 func newPhaseNextCommand(options *reviewCLIOptions) *cobra.Command {
 	var sessionID, worker, format string
+	var all bool
 	cmd := &cobra.Command{
 		Use: "next", Short: "Claim the next ready deep-review phase", Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -116,6 +121,36 @@ func newPhaseNextCommand(options *reviewCLIOptions) *cobra.Command {
 			repo, err := reviewRepository(options.repo)
 			if err != nil {
 				return err
+			}
+			if all {
+				tasks, claimErr := delegation.ClaimReadyPhases(repo, sessionID, worker, time.Now().UTC(), 15*time.Minute)
+				if claimErr != nil {
+					return claimErr
+				}
+				output := phaseNextOutput{SessionID: sessionID, Tasks: tasks, Prompts: []string{}, InputPaths: []string{}, Submissions: []delegation.PhaseSubmission{}}
+				for _, task := range tasks {
+					prompt, promptErr := delegation.PhasePrompt(repo, sessionID, task.ID)
+					if promptErr != nil {
+						return promptErr
+					}
+					draft, inputPath, draftErr := delegation.CreatePhaseDraft(repo, sessionID, task.ID)
+					if draftErr != nil {
+						return draftErr
+					}
+					output.ProtocolVersion = draft.ProtocolVersion
+					output.Prompts = append(output.Prompts, prompt)
+					output.InputPaths = append(output.InputPaths, inputPath)
+					output.Submissions = append(output.Submissions, *draft)
+				}
+				output.Prompt = strings.Join(output.Prompts, "\n")
+				if strings.ToLower(format) == "prompt" {
+					_, err = io.WriteString(cmd.OutOrStdout(), output.Prompt)
+					return err
+				}
+				if strings.ToLower(format) != "json" {
+					return fmt.Errorf("unsupported format %q; use json or prompt", format)
+				}
+				return writeCommandJSON(cmd, output)
 			}
 			task, err := delegation.ClaimNextPhase(repo, sessionID, worker, time.Now().UTC(), 15*time.Minute)
 			if err != nil {
@@ -131,7 +166,7 @@ func newPhaseNextCommand(options *reviewCLIOptions) *cobra.Command {
 			}
 			switch strings.ToLower(format) {
 			case "json":
-				return writeCommandJSON(cmd, phaseNextOutput{ProtocolVersion: delegation.ProtocolVersion, SessionID: sessionID, Task: *task, Prompt: prompt, InputPath: inputPath, Submission: draft})
+				return writeCommandJSON(cmd, phaseNextOutput{ProtocolVersion: draft.ProtocolVersion, SessionID: sessionID, Task: *task, Prompt: prompt, InputPath: inputPath, Submission: draft})
 			case "prompt":
 				_, err = io.WriteString(cmd.OutOrStdout(), prompt)
 				return err
@@ -143,20 +178,38 @@ func newPhaseNextCommand(options *reviewCLIOptions) *cobra.Command {
 	cmd.Flags().StringVar(&sessionID, "session", "", "prepared session id")
 	cmd.Flags().StringVar(&worker, "worker", "", "opaque worker id")
 	cmd.Flags().StringVar(&format, "format", "json", "output format: json or prompt")
+	cmd.Flags().BoolVar(&all, "all", false, "atomically claim every ready task in the current stage")
 	return cmd
 }
 
 func newPhaseSubmitCommand(options *reviewCLIOptions) *cobra.Command {
-	var sessionID, taskID, inputPath string
+	var sessionID, taskID, inputPath, batchPath string
 	cmd := &cobra.Command{
 		Use: "submit", Short: "Validate and persist one phase artifact", Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if sessionID == "" || taskID == "" || inputPath == "" {
-				return fmt.Errorf("--session, --task, and --input are required")
+			if sessionID == "" {
+				return fmt.Errorf("--session is required")
+			}
+			if batchPath != "" && (taskID != "" || inputPath != "") {
+				return fmt.Errorf("--batch is mutually exclusive with --task and --input")
+			}
+			if batchPath == "" && (taskID == "" || inputPath == "") {
+				return fmt.Errorf("use --batch, or provide both --task and --input")
 			}
 			repo, err := reviewRepository(options.repo)
 			if err != nil {
 				return err
+			}
+			if batchPath != "" {
+				var batch delegation.PhaseBatchSubmission
+				if err := readStrictJSONFile(batchPath, &batch); err != nil {
+					return fmt.Errorf("decode phase submission batch: %w", err)
+				}
+				result, err := delegation.SubmitPhaseBatch(repo, sessionID, batch)
+				if err != nil {
+					return err
+				}
+				return writeCommandJSON(cmd, result)
 			}
 			var submission delegation.PhaseSubmission
 			if err := readStrictJSONFile(inputPath, &submission); err != nil {
@@ -172,6 +225,7 @@ func newPhaseSubmitCommand(options *reviewCLIOptions) *cobra.Command {
 	cmd.Flags().StringVar(&sessionID, "session", "", "prepared session id")
 	cmd.Flags().StringVar(&taskID, "task", "", "claimed phase task id")
 	cmd.Flags().StringVar(&inputPath, "input", "", "phase submission JSON file")
+	cmd.Flags().StringVar(&batchPath, "batch", "", "JSON file containing an ordered submissions array")
 	return cmd
 }
 
@@ -285,6 +339,9 @@ func runPrepare(cmd *cobra.Command, options *reviewCLIOptions) error {
 }
 
 func prepareNextStep(request *delegation.Request) string {
+	if request.Instructions.ReviewProfile == delegation.ReviewProfileAdaptive {
+		return "Use acr review phase next --all and phase submit --batch through analysis, conditional critique, and any resolve stage; then run draft and submit --render."
+	}
 	if request.Instructions.ReviewProfile == delegation.ReviewProfileDeep {
 		return "Loop over acr review phase next and phase submit until workflow is ready, then run acr review draft and acr review submit --render; present the emitted Markdown."
 	}

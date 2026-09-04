@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 var hunkHeader = regexp.MustCompile(`^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@`)
@@ -75,6 +76,21 @@ func Submit(repo, sessionID string, submission Submission) (*Result, error) {
 			}
 			return result, nil
 		}
+	} else if request.ProtocolVersion == AdaptiveProtocolVersion && request.Instructions.ReviewProfile == ReviewProfileAdaptive {
+		workflow, err = LoadWorkflow(repo, sessionID)
+		if err != nil {
+			result.Rejected = append(result.Rejected, Rejection{Index: -1, Code: "workflow_unreadable", Message: err.Error()})
+		} else {
+			result.Rejected = append(result.Rejected, validateAdaptiveFinalization(request, workflow, submission)...)
+			result.Assurance = buildReviewAssurance(request, workflow, submission)
+		}
+		if len(result.Rejected) > 0 {
+			result.Summary.Rejected = len(result.Rejected)
+			if err := writeJSON(filepath.Join(dir, ResultFileName), result); err != nil {
+				return nil, err
+			}
+			return result, nil
+		}
 	}
 	seen := map[string]struct{}{}
 	acceptedIndexes := map[int]bool{}
@@ -109,6 +125,24 @@ func Submit(repo, sessionID string, submission Submission) (*Result, error) {
 		}
 	}
 	return result, nil
+}
+
+func validateAdaptiveFinalization(request *Request, workflow *Workflow, submission Submission) []Rejection {
+	if workflow.State != WorkflowReady && workflow.State != WorkflowComplete {
+		return []Rejection{{Index: -1, Code: "phase_incomplete", Message: "complete every adaptive review phase before final submission"}}
+	}
+	rejections := validateWorkflowEvidence(request, workflow)
+	expected, err := adaptiveSubmission(request, workflow)
+	if err != nil {
+		return append(rejections, Rejection{Index: -1, Code: "workflow_artifact_invalid", Message: err.Error()})
+	}
+	expectedValue := normalizeSubmission(*expected)
+	expectedJSON, _ := json.Marshal(expectedValue)
+	actualJSON, _ := json.Marshal(submission)
+	if string(expectedJSON) != string(actualJSON) {
+		rejections = append(rejections, Rejection{Index: -1, Code: "adaptive_draft_mismatch", Message: "adaptive findings must match the accepted render-ready candidates and stored question resolutions"})
+	}
+	return rejections
 }
 
 func validateDeepFinalization(request *Request, workflow *Workflow, submission Submission) []Rejection {
@@ -245,11 +279,41 @@ func buildReviewAssurance(request *Request, workflow *Workflow, submission Submi
 		CommunicationLevel:   request.Instructions.TokenEconomy.Level,
 		CommunicationBackend: workflow.CommunicationBackend,
 		Candidates:           len(candidates), EvidenceFiles: len(workflow.Evidence),
+		BatchCalls: workflow.BatchCalls, ValidationRejections: workflow.ValidationRejections,
 	}
+	if workflow.ProtocolVersion == AdaptiveProtocolVersion {
+		assurance.Candidates = len(submission.CandidateDispositions)
+	}
+	var earliest, latest time.Time
 	for _, task := range workflow.Tasks {
 		if task.State == PhaseSubmitted {
 			assurance.PhasesCompleted++
 		}
+		if task.ClaimedAt.IsZero() || task.SubmittedAt.IsZero() {
+			continue
+		}
+		if earliest.IsZero() || task.ClaimedAt.Before(earliest) {
+			earliest = task.ClaimedAt
+		}
+		if latest.IsZero() || task.SubmittedAt.After(latest) {
+			latest = task.SubmittedAt
+		}
+		switch task.Phase {
+		case PhaseAnalysis:
+			assurance.AnalysisMS = extendStageWindow(assurance.AnalysisMS, workflow.Tasks, PhaseAnalysis)
+		case PhaseCritique:
+			assurance.CritiqueMS = extendStageWindow(assurance.CritiqueMS, workflow.Tasks, PhaseCritique)
+			var phase PhaseSubmission
+			var payload CritiquePayload
+			if readJSON(task.SubmissionPath, &phase) == nil && json.Unmarshal(phase.Payload, &payload) == nil && payload.CriticMode == CriticSameContext {
+				assurance.CriticFallbacks++
+			}
+		case PhaseResolve:
+			assurance.ResolutionMS = extendStageWindow(assurance.ResolutionMS, workflow.Tasks, PhaseResolve)
+		}
+	}
+	if !earliest.IsZero() && latest.After(earliest) {
+		assurance.TotalElapsedMS = latest.Sub(earliest).Milliseconds()
 	}
 	for _, disposition := range submission.CandidateDispositions {
 		if disposition.Outcome == DispositionDrop {
@@ -260,6 +324,28 @@ func buildReviewAssurance(request *Request, workflow *Workflow, submission Submi
 		}
 	}
 	return assurance
+}
+
+func extendStageWindow(current int64, tasks []PhaseTask, phase string) int64 {
+	if current != 0 {
+		return current
+	}
+	var earliest, latest time.Time
+	for _, task := range tasks {
+		if task.Phase != phase || task.ClaimedAt.IsZero() || task.SubmittedAt.IsZero() {
+			continue
+		}
+		if earliest.IsZero() || task.ClaimedAt.Before(earliest) {
+			earliest = task.ClaimedAt
+		}
+		if latest.IsZero() || task.SubmittedAt.After(latest) {
+			latest = task.SubmittedAt
+		}
+	}
+	if earliest.IsZero() || !latest.After(earliest) {
+		return 0
+	}
+	return latest.Sub(earliest).Milliseconds()
 }
 
 func dispositionDigest(disposition CandidateDisposition) string {

@@ -34,6 +34,8 @@ Use `acr` to enforce evidence-backed review phases. The active host model reason
 
    Complete barriers in order: `intent`, `impact`, `candidates`, `critique`, `finalize`. Keep the same host, model label, and opaque context ID for intent, impact, candidates, and finalize. Inspect every unit and answer every deterministic risk question. Candidate IDs must link known invariants/questions, anchor changed lines, and cite exact evidence. Empty candidate sets need explicit coverage.
 
+   For an explicitly requested adaptive review, prepare with `--profile adaptive`, claim a whole stage using `phase next --all`, and submit its ordered drafts using `phase submit --batch <file>`. Use the same selected host/model throughout, a fresh context for critique, and the original primary context for resolve. Same-context critique is only an explicitly labeled degraded fallback.
+
 3. Critique every candidate blind to primary identity and confidence. Use the same host/model in a fresh context ID when the host supports an isolated reviewer task or subagent. Return that task's phase JSON to the orchestrator for submission, then resume the primary context for finalize. If isolation is unavailable, use the primary context with `critic_mode: "same_context"`; never label it independent. Units without candidates use `critic_mode: "not_required"`.
 
 4. After finalize, create the final transport:

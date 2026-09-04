@@ -1,0 +1,7 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/SarimSyed/agent-code-review/schemas/review-result-v3.json",
+  "type": "object",
+  "required": ["protocol_version", "session_id", "findings", "rejected", "summary"],
+  "properties": { "protocol_version": { "const": "3" }, "session_id": { "type": "string", "minLength": 1 }, "question_resolutions": { "type": "array" }, "candidate_dispositions": { "type": "array" }, "findings": { "type": "array" }, "rejected": { "type": "array" }, "summary": { "type": "object" }, "assurance": { "type": "object" } }
+}

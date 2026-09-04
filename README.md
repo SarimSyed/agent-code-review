@@ -52,11 +52,18 @@ acr review prepare --profile deep --path src
 # Optional compact agent communication (full is the default level)
 acr review prepare --profile deep --caveman --caveman-level full
 
+# Opt-in protocol v3
+acr review prepare --profile adaptive
+
 # Claim and submit every unit through intent, impact, candidates, critique,
 # and finalize. Critique uses a fresh same-model context when available.
 acr review phase next --session <id> --worker <worker>
 acr review phase submit --session <id> --task <task-id> --input <phase-result>
 acr review phase status --session <id>
+
+# Adaptive stages can be handled in one model turn each
+acr review phase next --session <id> --worker <worker> --all
+acr review phase submit --session <id> --batch submissions.json
 
 # After every phase is complete, create the final findings transport.
 acr review draft --session <id>
@@ -83,6 +90,8 @@ Prepared sessions live in the ignored `.acr/sessions/` directory. Review prepara
 Fix prompts are generated deterministically from validated findings and do not call a model. Per-finding mode is the default because it keeps each repair narrowly scoped; combined and `none` modes remain available. A successful `submit --render` returns the complete report in the same command, preventing an agent from leaving rendering as a user follow-up.
 
 Deep protocol-2 sessions persist five barriers. Per-unit tasks use expiring atomic claims and idempotent submissions. Evidence files are frozen when first cited. Candidates must anchor changed lines and retain lineage through critique and final disposition. A critic-rejected candidate cannot survive without an explicit override and additional evidence. Protocol-1 sessions and the standard profile remain compatible with direct submission.
+
+Adaptive protocol-3 sessions are opt-in. They batch intent, impact, risk, questions, and render-ready candidates into one analysis stage. Safe low-risk empty units finish immediately; candidates, deterministic questions, or high risk trigger same-model critique in a fresh context. Only disagreements, revisions, or discoveries return to the primary context for resolution. Deep remains the default rollback path.
 
 `--caveman` shortens prompts and agent chatter through the installed Caveman skill, or through a labeled compact fallback when unavailable. Paths, symbols, numbers, evidence, review coverage, critic independence, and final user-facing Markdown remain unchanged. ACR never estimates token usage.
 
@@ -116,6 +125,9 @@ acr benchmark prepare \
   --dataset qodo-benchmark.json \
   --pr https://github.com/owner/repository/pull/123 \
   --caveman --caveman-level full
+
+# Select adaptive for the ACR arm; run separate truthful trials per host model.
+acr benchmark prepare --dataset qodo-benchmark.json --limit 5 --trials 3 --acr-profile adaptive
 
 # Agent integrations loop over these commands in fresh contexts
 acr benchmark next --run <id> --worker <unique-worker>

@@ -21,6 +21,8 @@ const (
 	PhaseCandidates = "candidates"
 	PhaseCritique   = "critique"
 	PhaseFinalize   = "finalize"
+	PhaseAnalysis   = "analysis"
+	PhaseResolve    = "resolve"
 
 	PhaseQueued    = "queued"
 	PhaseClaimed   = "claimed"
@@ -38,6 +40,8 @@ const (
 	CritiqueRevise      = "revise"
 	DispositionSubmit   = "submit"
 	DispositionDrop     = "drop"
+	RiskLow             = "low"
+	RiskHigh            = "high"
 )
 
 var phaseOrder = []string{PhaseIntent, PhaseImpact, PhaseCandidates, PhaseCritique, PhaseFinalize}
@@ -51,6 +55,8 @@ type Workflow struct {
 	CriticMode           string                      `json:"critic_mode,omitempty"`
 	CommunicationBackend string                      `json:"communication_backend,omitempty"`
 	Evidence             map[string]EvidenceSnapshot `json:"evidence,omitempty"`
+	BatchCalls           int                         `json:"batch_calls,omitempty"`
+	ValidationRejections int                         `json:"validation_rejections,omitempty"`
 }
 
 type PhaseTask struct {
@@ -61,6 +67,8 @@ type PhaseTask struct {
 	Worker         string    `json:"worker,omitempty"`
 	ClaimedAt      time.Time `json:"claimed_at,omitempty"`
 	LeaseExpiresAt time.Time `json:"lease_expires_at,omitempty"`
+	SubmittedAt    time.Time `json:"submitted_at,omitempty"`
+	DurationMS     int64     `json:"claim_to_submit_ms,omitempty"`
 	SubmissionPath string    `json:"submission_path,omitempty"`
 	SubmissionSHA  string    `json:"submission_sha256,omitempty"`
 }
@@ -109,6 +117,21 @@ type ImpactPayload struct {
 	Questions []InvestigatedQuestion `json:"questions,omitempty"`
 }
 
+type RiskAssessment struct {
+	Level     string `json:"level"`
+	Rationale string `json:"rationale"`
+}
+
+type AdaptiveAnalysisPayload struct {
+	Coverage        string                 `json:"coverage"`
+	Risk            RiskAssessment         `json:"risk"`
+	BehaviorChanges []EvidenceStatement    `json:"behavior_changes"`
+	Invariants      []EvidenceStatement    `json:"invariants"`
+	Traces          []ImpactTrace          `json:"traces"`
+	Questions       []InvestigatedQuestion `json:"questions,omitempty"`
+	Candidates      []Candidate            `json:"candidates"`
+}
+
 type Candidate struct {
 	ID           string        `json:"id"`
 	File         string        `json:"file"`
@@ -117,6 +140,10 @@ type Candidate struct {
 	Title        string        `json:"title"`
 	Trigger      string        `json:"trigger"`
 	Impact       string        `json:"impact"`
+	Severity     string        `json:"severity,omitempty"`
+	Category     string        `json:"category,omitempty"`
+	Explanation  string        `json:"explanation,omitempty"`
+	SuggestedFix string        `json:"suggested_fix,omitempty"`
 	Evidence     []EvidenceRef `json:"evidence"`
 	Confidence   float64       `json:"confidence"`
 	InvariantIDs []string      `json:"invariant_ids,omitempty"`
@@ -134,14 +161,21 @@ type CritiqueVerdict struct {
 	Rationale   string        `json:"rationale"`
 	Evidence    []EvidenceRef `json:"evidence,omitempty"`
 	Confidence  float64       `json:"confidence"`
+	Replacement *Candidate    `json:"replacement,omitempty"`
 }
 
 type CritiquePayload struct {
-	CriticMode string            `json:"critic_mode"`
-	Verdicts   []CritiqueVerdict `json:"verdicts"`
+	CriticMode    string            `json:"critic_mode"`
+	Verdicts      []CritiqueVerdict `json:"verdicts"`
+	NewCandidates []Candidate       `json:"new_candidates,omitempty"`
 }
 
 type FinalizePayload struct {
+	Coverage              string                 `json:"coverage"`
+	CandidateDispositions []CandidateDisposition `json:"candidate_dispositions"`
+}
+
+type ResolvePayload struct {
 	Coverage              string                 `json:"coverage"`
 	CandidateDispositions []CandidateDisposition `json:"candidate_dispositions"`
 }
@@ -172,14 +206,35 @@ type PhaseSubmitResult struct {
 	Rejections      []PhaseRejection `json:"rejections,omitempty"`
 }
 
+type PhaseBatchSubmission struct {
+	ProtocolVersion string            `json:"protocol_version"`
+	SessionID       string            `json:"session_id"`
+	Submissions     []PhaseSubmission `json:"submissions"`
+}
+
+type PhaseBatchSubmitResult struct {
+	ProtocolVersion string              `json:"protocol_version"`
+	SessionID       string              `json:"session_id"`
+	Results         []PhaseSubmitResult `json:"results"`
+	WorkflowState   string              `json:"workflow_state"`
+}
+
 func newWorkflow(request *Request) *Workflow {
 	workflow := &Workflow{
-		ProtocolVersion: ProtocolVersion,
+		ProtocolVersion: request.ProtocolVersion,
 		SessionID:       request.SessionID,
 		State:           WorkflowReady,
 		Evidence:        map[string]EvidenceSnapshot{},
 	}
 	if request.Instructions.ReviewProfile != ReviewProfileDeep {
+		if request.Instructions.ReviewProfile == ReviewProfileAdaptive {
+			workflow.State = WorkflowActive
+			for _, unit := range request.Units {
+				workflow.Tasks = append(workflow.Tasks, PhaseTask{
+					ID: PhaseAnalysis + "-" + unit.ID, UnitID: unit.ID, Phase: PhaseAnalysis, State: PhaseQueued,
+				})
+			}
+		}
 		return workflow
 	}
 	workflow.State = WorkflowActive
@@ -201,7 +256,7 @@ func LoadWorkflow(repo, sessionID string) (*Workflow, error) {
 	if err := readJSON(filepath.Join(SessionDir(repo, sessionID), WorkflowFileName), &workflow); err != nil {
 		return nil, err
 	}
-	if workflow.ProtocolVersion != ProtocolVersion || workflow.SessionID != sessionID {
+	if (workflow.ProtocolVersion != ProtocolVersion && workflow.ProtocolVersion != AdaptiveProtocolVersion) || workflow.SessionID != sessionID {
 		return nil, fmt.Errorf("invalid workflow protocol or session id")
 	}
 	if workflow.State != WorkflowActive && workflow.State != WorkflowReady && workflow.State != WorkflowComplete {
@@ -210,7 +265,7 @@ func LoadWorkflow(repo, sessionID string) (*Workflow, error) {
 	seenTasks := map[string]bool{}
 	allSubmitted := true
 	for _, task := range workflow.Tasks {
-		if task.ID == "" || task.UnitID == "" || seenTasks[task.ID] || indexOfPhase(task.Phase) < 0 {
+		if task.ID == "" || task.UnitID == "" || seenTasks[task.ID] || indexOfWorkflowPhase(workflow.ProtocolVersion, task.Phase) < 0 {
 			return nil, fmt.Errorf("invalid workflow task identity")
 		}
 		seenTasks[task.ID] = true
@@ -231,6 +286,18 @@ func LoadWorkflow(repo, sessionID string) (*Workflow, error) {
 	return &workflow, nil
 }
 
+func indexOfWorkflowPhase(protocolVersion, phase string) int {
+	if protocolVersion == AdaptiveProtocolVersion {
+		for index, candidate := range []string{PhaseAnalysis, PhaseCritique, PhaseResolve} {
+			if candidate == phase {
+				return index
+			}
+		}
+		return -1
+	}
+	return indexOfPhase(phase)
+}
+
 func saveWorkflow(repo string, workflow *Workflow) error {
 	return writeJSON(filepath.Join(SessionDir(repo, workflow.SessionID), WorkflowFileName), workflow)
 }
@@ -248,18 +315,10 @@ func ClaimNextPhase(repo, sessionID, worker string, now time.Time, lease time.Du
 		if workflow.State != WorkflowActive {
 			return fmt.Errorf("no phase tasks are ready")
 		}
+		requeueExpiredPhaseClaims(workflow.Tasks, now)
 		for i := range workflow.Tasks {
 			task := &workflow.Tasks[i]
-			if task.State == PhaseClaimed && !task.LeaseExpiresAt.After(now) {
-				task.State = PhaseQueued
-				task.Worker = ""
-				task.ClaimedAt = time.Time{}
-				task.LeaseExpiresAt = time.Time{}
-			}
-		}
-		for i := range workflow.Tasks {
-			task := &workflow.Tasks[i]
-			if task.State != PhaseQueued || !phaseBarrierComplete(workflow.Tasks, task.Phase) {
+			if task.State != PhaseQueued || !workflowPhaseBarrierComplete(workflow, task.Phase) {
 				continue
 			}
 			task.State = PhaseClaimed
@@ -273,6 +332,77 @@ func ClaimNextPhase(repo, sessionID, worker string, now time.Time, lease time.Du
 		return fmt.Errorf("no phase tasks are ready")
 	})
 	return claimed, err
+}
+
+// ClaimReadyPhases atomically claims every ready task in the earliest workflow
+// stage so one host-model turn can cover the whole batch.
+func ClaimReadyPhases(repo, sessionID, worker string, now time.Time, lease time.Duration) ([]PhaseTask, error) {
+	if strings.TrimSpace(worker) == "" || lease <= 0 {
+		return nil, fmt.Errorf("worker and positive lease are required")
+	}
+	claimed := make([]PhaseTask, 0)
+	err := withWorkflowLock(repo, sessionID, func() error {
+		workflow, err := LoadWorkflow(repo, sessionID)
+		if err != nil {
+			return err
+		}
+		if workflow.State != WorkflowActive {
+			return fmt.Errorf("no phase tasks are ready")
+		}
+		requeueExpiredPhaseClaims(workflow.Tasks, now)
+		phase := ""
+		for i := range workflow.Tasks {
+			task := &workflow.Tasks[i]
+			if task.State == PhaseQueued && workflowPhaseBarrierComplete(workflow, task.Phase) {
+				phase = task.Phase
+				break
+			}
+		}
+		if phase == "" {
+			return fmt.Errorf("no phase tasks are ready")
+		}
+		for i := range workflow.Tasks {
+			task := &workflow.Tasks[i]
+			if task.State != PhaseQueued || task.Phase != phase || !workflowPhaseBarrierComplete(workflow, task.Phase) {
+				continue
+			}
+			task.State = PhaseClaimed
+			task.Worker = worker
+			task.ClaimedAt = now.UTC()
+			task.LeaseExpiresAt = now.Add(lease).UTC()
+			claimed = append(claimed, *task)
+		}
+		return saveWorkflow(repo, workflow)
+	})
+	return claimed, err
+}
+
+func requeueExpiredPhaseClaims(tasks []PhaseTask, now time.Time) {
+	for i := range tasks {
+		task := &tasks[i]
+		if task.State == PhaseClaimed && !task.LeaseExpiresAt.After(now) {
+			task.State = PhaseQueued
+			task.Worker = ""
+			task.ClaimedAt = time.Time{}
+			task.LeaseExpiresAt = time.Time{}
+		}
+	}
+}
+
+func workflowPhaseBarrierComplete(workflow *Workflow, phase string) bool {
+	if workflow.ProtocolVersion == AdaptiveProtocolVersion {
+		phaseIndex := indexOfWorkflowPhase(workflow.ProtocolVersion, phase)
+		if phaseIndex <= 0 {
+			return true
+		}
+		for _, task := range workflow.Tasks {
+			if indexOfWorkflowPhase(workflow.ProtocolVersion, task.Phase) < phaseIndex && task.State != PhaseSubmitted {
+				return false
+			}
+		}
+		return true
+	}
+	return phaseBarrierComplete(workflow.Tasks, phase)
 }
 
 func phaseBarrierComplete(tasks []PhaseTask, phase string) bool {
@@ -299,7 +429,11 @@ func indexOfPhase(phase string) int {
 }
 
 func SubmitPhase(repo, sessionID, taskID string, submission PhaseSubmission) (*PhaseSubmitResult, error) {
-	result := &PhaseSubmitResult{ProtocolVersion: ProtocolVersion, SessionID: sessionID, TaskID: taskID}
+	return submitPhaseAt(repo, sessionID, taskID, submission, time.Now().UTC())
+}
+
+func submitPhaseAt(repo, sessionID, taskID string, submission PhaseSubmission, submittedAt time.Time) (*PhaseSubmitResult, error) {
+	result := &PhaseSubmitResult{ProtocolVersion: submission.ProtocolVersion, SessionID: sessionID, TaskID: taskID}
 	err := withWorkflowLock(repo, sessionID, func() error {
 		request, err := LoadRequest(repo, sessionID)
 		if err != nil {
@@ -315,14 +449,23 @@ func SubmitPhase(repo, sessionID, taskID string, submission PhaseSubmission) (*P
 		}
 		task := &workflow.Tasks[index]
 		result.WorkflowState = workflow.State
-		if submission.ProtocolVersion != ProtocolVersion || submission.SessionID != sessionID || submission.TaskID != taskID || submission.UnitID != task.UnitID || submission.Phase != task.Phase {
+		result.ProtocolVersion = request.ProtocolVersion
+		if submission.ProtocolVersion != request.ProtocolVersion || submission.SessionID != sessionID || submission.TaskID != taskID || submission.UnitID != task.UnitID || submission.Phase != task.Phase {
 			result.Rejections = append(result.Rejections, PhaseRejection{Code: "identity_mismatch", Message: "submission protocol, session, task, unit, or phase does not match"})
+			if workflow.ProtocolVersion == AdaptiveProtocolVersion {
+				workflow.ValidationRejections++
+				return saveWorkflow(repo, workflow)
+			}
 			return nil
 		}
 		result.Rejections = append(result.Rejections, validatePhaseExecutor(request, workflow, task, submission)...)
 		normalized, rejections := validatePhasePayload(request, workflow, task, submission.Payload)
 		result.Rejections = append(result.Rejections, rejections...)
 		if len(result.Rejections) > 0 {
+			if workflow.ProtocolVersion == AdaptiveProtocolVersion {
+				workflow.ValidationRejections += len(result.Rejections)
+				return saveWorkflow(repo, workflow)
+			}
 			return nil
 		}
 		submission.Payload = normalized
@@ -349,6 +492,10 @@ func SubmitPhase(repo, sessionID, taskID string, submission PhaseSubmission) (*P
 			return fmt.Errorf("write phase submission: %w", err)
 		}
 		task.State = PhaseSubmitted
+		task.SubmittedAt = submittedAt.UTC()
+		if !task.ClaimedAt.IsZero() && submittedAt.After(task.ClaimedAt) {
+			task.DurationMS = submittedAt.Sub(task.ClaimedAt).Milliseconds()
+		}
 		task.Worker = ""
 		task.LeaseExpiresAt = time.Time{}
 		task.SubmissionPath = path
@@ -377,7 +524,11 @@ func SubmitPhase(repo, sessionID, taskID string, submission PhaseSubmission) (*P
 				}
 			}
 		}
-		if allPhaseTasksSubmitted(workflow.Tasks) {
+		if workflow.ProtocolVersion == AdaptiveProtocolVersion {
+			if err := advanceAdaptiveWorkflow(request, workflow); err != nil {
+				return err
+			}
+		} else if allPhaseTasksSubmitted(workflow.Tasks) {
 			workflow.State = WorkflowReady
 		}
 		result.Accepted = true
@@ -385,6 +536,133 @@ func SubmitPhase(repo, sessionID, taskID string, submission PhaseSubmission) (*P
 		return saveWorkflow(repo, workflow)
 	})
 	return result, err
+}
+
+func SubmitPhaseBatch(repo, sessionID string, batch PhaseBatchSubmission) (*PhaseBatchSubmitResult, error) {
+	return submitPhaseBatchAt(repo, sessionID, batch, time.Now().UTC())
+}
+
+func submitPhaseBatchAt(repo, sessionID string, batch PhaseBatchSubmission, submittedAt time.Time) (*PhaseBatchSubmitResult, error) {
+	request, err := LoadRequest(repo, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	if batch.ProtocolVersion != request.ProtocolVersion || batch.SessionID != sessionID {
+		return nil, fmt.Errorf("batch protocol or session does not match")
+	}
+	result := &PhaseBatchSubmitResult{
+		ProtocolVersion: request.ProtocolVersion,
+		SessionID:       sessionID,
+		Results:         make([]PhaseSubmitResult, 0, len(batch.Submissions)),
+	}
+	for _, submission := range batch.Submissions {
+		item, submitErr := submitPhaseAt(repo, sessionID, submission.TaskID, submission, submittedAt)
+		if submitErr != nil {
+			return nil, submitErr
+		}
+		result.Results = append(result.Results, *item)
+	}
+	err = withWorkflowLock(repo, sessionID, func() error {
+		workflow, loadErr := LoadWorkflow(repo, sessionID)
+		if loadErr != nil {
+			return loadErr
+		}
+		workflow.BatchCalls++
+		result.WorkflowState = workflow.State
+		return saveWorkflow(repo, workflow)
+	})
+	return result, err
+}
+
+func advanceAdaptiveWorkflow(request *Request, workflow *Workflow) error {
+	if !allTasksOfPhaseSubmitted(workflow.Tasks, PhaseAnalysis) {
+		return nil
+	}
+	if !hasTasksOfPhase(workflow.Tasks, PhaseCritique) {
+		for _, unit := range request.Units {
+			analysis, err := analysisForUnit(workflow, unit.ID)
+			if err != nil {
+				return err
+			}
+			if len(analysis.Candidates) == 0 && len(analysis.Questions) == 0 && analysis.Risk.Level == RiskLow {
+				continue
+			}
+			workflow.Tasks = append(workflow.Tasks, PhaseTask{
+				ID: PhaseCritique + "-" + unit.ID, UnitID: unit.ID, Phase: PhaseCritique, State: PhaseQueued,
+			})
+		}
+		if !hasTasksOfPhase(workflow.Tasks, PhaseCritique) {
+			workflow.State = WorkflowReady
+		}
+		return nil
+	}
+	if allTasksOfPhaseSubmitted(workflow.Tasks, PhaseCritique) && !hasTasksOfPhase(workflow.Tasks, PhaseResolve) {
+		for _, task := range workflow.Tasks {
+			if task.Phase != PhaseCritique {
+				continue
+			}
+			needsResolution, err := critiqueNeedsResolution(task)
+			if err != nil {
+				return err
+			}
+			if needsResolution {
+				workflow.Tasks = append(workflow.Tasks, PhaseTask{
+					ID: PhaseResolve + "-" + task.UnitID, UnitID: task.UnitID, Phase: PhaseResolve, State: PhaseQueued,
+				})
+			}
+		}
+		if !hasTasksOfPhase(workflow.Tasks, PhaseResolve) {
+			workflow.State = WorkflowReady
+		}
+		return nil
+	}
+	if hasTasksOfPhase(workflow.Tasks, PhaseResolve) && allTasksOfPhaseSubmitted(workflow.Tasks, PhaseResolve) {
+		workflow.State = WorkflowReady
+	}
+	return nil
+}
+
+func critiqueNeedsResolution(task PhaseTask) (bool, error) {
+	var submission PhaseSubmission
+	if err := readJSON(task.SubmissionPath, &submission); err != nil {
+		return false, err
+	}
+	var payload CritiquePayload
+	if err := json.Unmarshal(submission.Payload, &payload); err != nil {
+		return false, err
+	}
+	if len(payload.NewCandidates) > 0 {
+		return true, nil
+	}
+	for _, verdict := range payload.Verdicts {
+		if verdict.Verdict != CritiqueSupported {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func hasTasksOfPhase(tasks []PhaseTask, phase string) bool {
+	for _, task := range tasks {
+		if task.Phase == phase {
+			return true
+		}
+	}
+	return false
+}
+
+func allTasksOfPhaseSubmitted(tasks []PhaseTask, phase string) bool {
+	found := false
+	for _, task := range tasks {
+		if task.Phase != phase {
+			continue
+		}
+		found = true
+		if task.State != PhaseSubmitted {
+			return false
+		}
+	}
+	return found
 }
 
 func validatePhaseExecutor(request *Request, workflow *Workflow, task *PhaseTask, submission PhaseSubmission) []PhaseRejection {
@@ -438,6 +716,67 @@ func validatePhaseExecutor(request *Request, workflow *Workflow, task *PhaseTask
 
 func validatePhasePayload(request *Request, workflow *Workflow, task *PhaseTask, raw json.RawMessage) (json.RawMessage, []PhaseRejection) {
 	switch task.Phase {
+	case PhaseAnalysis:
+		var payload AdaptiveAnalysisPayload
+		if err := decodeStrictJSON(raw, &payload); err != nil {
+			return raw, []PhaseRejection{{Code: "malformed_phase_payload", Message: err.Error()}}
+		}
+		rejections := make([]PhaseRejection, 0)
+		if strings.TrimSpace(payload.Coverage) == "" {
+			rejections = append(rejections, PhaseRejection{Code: "missing_coverage", Message: "analysis requires coverage evidence"})
+		}
+		if payload.Risk.Level != RiskLow && payload.Risk.Level != RiskHigh {
+			rejections = append(rejections, PhaseRejection{Code: "invalid_risk", Message: "analysis risk must be low or high"})
+		}
+		if strings.TrimSpace(payload.Risk.Rationale) == "" {
+			rejections = append(rejections, PhaseRejection{Code: "missing_risk_rationale", Message: "analysis risk requires a rationale"})
+		}
+		seenStatements := map[string]bool{}
+		for i := range payload.BehaviorChanges {
+			rejections = append(rejections, validateEvidenceStatement(request, workflow, &payload.BehaviorChanges[i], seenStatements)...)
+		}
+		for i := range payload.Invariants {
+			rejections = append(rejections, validateEvidenceStatement(request, workflow, &payload.Invariants[i], seenStatements)...)
+		}
+		for i := range payload.Traces {
+			trace := &payload.Traces[i]
+			statement := EvidenceStatement{ID: trace.ID, Summary: trace.Summary, Evidence: trace.Evidence}
+			rejections = append(rejections, validateEvidenceStatement(request, workflow, &statement, seenStatements)...)
+			trace.ID, trace.Summary, trace.Evidence = statement.ID, statement.Summary, statement.Evidence
+			if strings.TrimSpace(trace.Kind) == "" {
+				rejections = append(rejections, PhaseRejection{Code: "missing_trace_kind", Message: "analysis traces require a kind"})
+			}
+		}
+		expectedQuestions := questionsForUnit(request, task.UnitID)
+		questionIDs := map[string]bool{}
+		for i := range payload.Questions {
+			question := &payload.Questions[i]
+			if !expectedQuestions[question.QuestionID] || questionIDs[question.QuestionID] {
+				rejections = append(rejections, PhaseRejection{Code: "invalid_question_investigation", Message: "question investigation references an unknown or duplicate question"})
+				continue
+			}
+			questionIDs[question.QuestionID] = true
+			if strings.TrimSpace(question.Conclusion) == "" || len(question.Evidence) == 0 {
+				rejections = append(rejections, PhaseRejection{Code: "missing_question_evidence", Message: "question investigations require conclusion and evidence"})
+			}
+			for j := range question.Evidence {
+				rejections = append(rejections, validateEvidenceRef(request, workflow, &question.Evidence[j])...)
+			}
+		}
+		for questionID := range expectedQuestions {
+			if !questionIDs[questionID] {
+				rejections = append(rejections, PhaseRejection{Code: "missing_question_investigation", Message: fmt.Sprintf("analysis must investigate %s", questionID)})
+			}
+		}
+		invariantIDs := map[string]bool{}
+		for _, invariant := range payload.Invariants {
+			invariantIDs[invariant.ID] = true
+		}
+		candidateIDs := existingCandidateIDs(workflow)
+		for i := range payload.Candidates {
+			rejections = append(rejections, validateCandidate(request, workflow, task.UnitID, &payload.Candidates[i], candidateIDs, invariantIDs, questionIDs, true)...)
+		}
+		return marshalPhasePayload(payload), rejections
 	case PhaseIntent:
 		var payload IntentPayload
 		if err := decodeStrictJSON(raw, &payload); err != nil {
@@ -550,6 +889,9 @@ func validatePhasePayload(request *Request, workflow *Workflow, task *PhaseTask,
 		if err := decodeStrictJSON(raw, &payload); err != nil {
 			return raw, []PhaseRejection{{Code: "malformed_phase_payload", Message: err.Error()}}
 		}
+		if request.ProtocolVersion == AdaptiveProtocolVersion {
+			return validateAdaptiveCritiquePayload(request, workflow, task, payload)
+		}
 		candidates, err := candidatesForUnit(workflow, task.UnitID)
 		if err != nil {
 			return raw, []PhaseRejection{{Code: "candidate_artifact_unreadable", Message: err.Error()}}
@@ -640,9 +982,129 @@ func validatePhasePayload(request *Request, workflow *Workflow, task *PhaseTask,
 			}
 		}
 		return marshalPhasePayload(payload), rejections
+	case PhaseResolve:
+		var payload ResolvePayload
+		if err := decodeStrictJSON(raw, &payload); err != nil {
+			return raw, []PhaseRejection{{Code: "malformed_phase_payload", Message: err.Error()}}
+		}
+		return validateResolvePayload(request, workflow, task, payload)
 	default:
 		return raw, []PhaseRejection{{Code: "unsupported_phase", Message: fmt.Sprintf("phase %q is not implemented", task.Phase)}}
 	}
+}
+
+func validateResolvePayload(request *Request, workflow *Workflow, task *PhaseTask, payload ResolvePayload) (json.RawMessage, []PhaseRejection) {
+	critique, err := critiqueForUnit(workflow, task.UnitID)
+	if err != nil {
+		return marshalPhasePayload(payload), []PhaseRejection{{Code: "critique_artifact_unreadable", Message: err.Error()}}
+	}
+	expected := map[string]bool{}
+	unsupported := map[string]bool{}
+	for _, verdict := range critique.Verdicts {
+		switch verdict.Verdict {
+		case CritiqueUnsupported:
+			expected[verdict.CandidateID] = true
+			unsupported[verdict.CandidateID] = true
+		case CritiqueRevise:
+			if verdict.Replacement != nil {
+				expected[verdict.Replacement.ID] = true
+			}
+		}
+	}
+	for _, candidate := range critique.NewCandidates {
+		expected[candidate.ID] = true
+	}
+	rejections := make([]PhaseRejection, 0)
+	if strings.TrimSpace(payload.Coverage) == "" {
+		rejections = append(rejections, PhaseRejection{Code: "missing_coverage", Message: "resolve requires synthesis coverage"})
+	}
+	seen := map[string]bool{}
+	for i := range payload.CandidateDispositions {
+		disposition := &payload.CandidateDispositions[i]
+		if !expected[disposition.CandidateID] || seen[disposition.CandidateID] {
+			rejections = append(rejections, PhaseRejection{Code: "invalid_candidate_disposition", Message: "resolve references an unknown or duplicate candidate"})
+			continue
+		}
+		seen[disposition.CandidateID] = true
+		if disposition.Outcome != DispositionSubmit && disposition.Outcome != DispositionDrop {
+			rejections = append(rejections, PhaseRejection{Code: "invalid_candidate_disposition", Message: "candidate outcome must be submit or drop"})
+		}
+		if strings.TrimSpace(disposition.Reason) == "" {
+			rejections = append(rejections, PhaseRejection{Code: "missing_disposition_reason", Message: "every candidate disposition requires a reason"})
+		}
+		if disposition.Outcome == DispositionSubmit && unsupported[disposition.CandidateID] && (strings.TrimSpace(disposition.OverrideReason) == "" || len(disposition.AdditionalEvidence) == 0) {
+			rejections = append(rejections, PhaseRejection{Code: "critic_override_required", Message: "critic-rejected candidates require override_reason and additional_evidence"})
+		}
+		for j := range disposition.AdditionalEvidence {
+			rejections = append(rejections, validateEvidenceRef(request, workflow, &disposition.AdditionalEvidence[j])...)
+		}
+	}
+	for candidateID := range expected {
+		if !seen[candidateID] {
+			rejections = append(rejections, PhaseRejection{Code: "missing_candidate_disposition", Message: fmt.Sprintf("resolve must decide %s", candidateID)})
+		}
+	}
+	return marshalPhasePayload(payload), rejections
+}
+
+func validateAdaptiveCritiquePayload(request *Request, workflow *Workflow, task *PhaseTask, payload CritiquePayload) (json.RawMessage, []PhaseRejection) {
+	analysis, err := analysisForUnit(workflow, task.UnitID)
+	if err != nil {
+		return marshalPhasePayload(payload), []PhaseRejection{{Code: "analysis_artifact_unreadable", Message: err.Error()}}
+	}
+	rejections := make([]PhaseRejection, 0)
+	if payload.CriticMode != CriticIndependent && payload.CriticMode != CriticSameContext {
+		rejections = append(rejections, PhaseRejection{Code: "invalid_critic_mode", Message: "adaptive critique requires independent or explicitly degraded same_context mode"})
+	}
+	expected := map[string]bool{}
+	for _, candidate := range analysis.Candidates {
+		expected[candidate.ID] = true
+	}
+	seenVerdicts := map[string]bool{}
+	invariantIDs := map[string]bool{}
+	for _, invariant := range analysis.Invariants {
+		invariantIDs[invariant.ID] = true
+	}
+	questionIDs := map[string]bool{}
+	for _, question := range analysis.Questions {
+		questionIDs[question.QuestionID] = true
+	}
+	seenCandidates := existingCandidateIDs(workflow)
+	for i := range payload.Verdicts {
+		verdict := &payload.Verdicts[i]
+		if !expected[verdict.CandidateID] || seenVerdicts[verdict.CandidateID] {
+			rejections = append(rejections, PhaseRejection{Code: "invalid_critique_candidate", Message: "critique references an unknown or duplicate candidate"})
+			continue
+		}
+		seenVerdicts[verdict.CandidateID] = true
+		if verdict.Verdict != CritiqueSupported && verdict.Verdict != CritiqueUnsupported && verdict.Verdict != CritiqueRevise {
+			rejections = append(rejections, PhaseRejection{Code: "invalid_critique_verdict", Message: "verdict must be supported, unsupported, or revise"})
+		}
+		if strings.TrimSpace(verdict.Rationale) == "" || verdict.Confidence <= 0 || verdict.Confidence > 1 {
+			rejections = append(rejections, PhaseRejection{Code: "incomplete_critique", Message: "critique requires rationale and confidence greater than 0 and at most 1"})
+		}
+		for j := range verdict.Evidence {
+			rejections = append(rejections, validateEvidenceRef(request, workflow, &verdict.Evidence[j])...)
+		}
+		if verdict.Verdict == CritiqueRevise {
+			if verdict.Replacement == nil {
+				rejections = append(rejections, PhaseRejection{Code: "missing_replacement_candidate", Message: "revise verdict requires a complete replacement candidate"})
+			} else {
+				rejections = append(rejections, validateCandidate(request, workflow, task.UnitID, verdict.Replacement, seenCandidates, invariantIDs, questionIDs, true)...)
+			}
+		} else if verdict.Replacement != nil {
+			rejections = append(rejections, PhaseRejection{Code: "unexpected_replacement_candidate", Message: "only revise verdicts may contain a replacement candidate"})
+		}
+	}
+	for candidateID := range expected {
+		if !seenVerdicts[candidateID] {
+			rejections = append(rejections, PhaseRejection{Code: "missing_critique", Message: fmt.Sprintf("critique must resolve %s", candidateID)})
+		}
+	}
+	for i := range payload.NewCandidates {
+		rejections = append(rejections, validateCandidate(request, workflow, task.UnitID, &payload.NewCandidates[i], seenCandidates, invariantIDs, questionIDs, true)...)
+	}
+	return marshalPhasePayload(payload), rejections
 }
 
 func questionsForUnit(request *Request, unitID string) map[string]bool {
@@ -658,32 +1120,104 @@ func questionsForUnit(request *Request, unitID string) map[string]bool {
 func existingCandidateIDs(workflow *Workflow) map[string]bool {
 	seen := map[string]bool{}
 	for _, task := range workflow.Tasks {
-		if task.Phase != PhaseCandidates || task.State != PhaseSubmitted {
+		if (task.Phase != PhaseCandidates && task.Phase != PhaseAnalysis) || task.State != PhaseSubmitted {
 			continue
 		}
 		var submission PhaseSubmission
 		if readJSON(task.SubmissionPath, &submission) != nil {
 			continue
 		}
-		var payload CandidatesPayload
-		if json.Unmarshal(submission.Payload, &payload) != nil {
-			continue
-		}
-		for _, candidate := range payload.Candidates {
-			seen[candidate.ID] = true
+		if task.Phase == PhaseAnalysis {
+			var payload AdaptiveAnalysisPayload
+			if json.Unmarshal(submission.Payload, &payload) == nil {
+				for _, candidate := range payload.Candidates {
+					seen[candidate.ID] = true
+				}
+			}
+		} else {
+			var payload CandidatesPayload
+			if json.Unmarshal(submission.Payload, &payload) == nil {
+				for _, candidate := range payload.Candidates {
+					seen[candidate.ID] = true
+				}
+			}
 		}
 	}
 	return seen
 }
 
-func candidatesForUnit(workflow *Workflow, unitID string) ([]Candidate, error) {
+func analysisForUnit(workflow *Workflow, unitID string) (*AdaptiveAnalysisPayload, error) {
 	for _, task := range workflow.Tasks {
-		if task.Phase != PhaseCandidates || task.UnitID != unitID || task.State != PhaseSubmitted {
+		if task.Phase != PhaseAnalysis || task.UnitID != unitID || task.State != PhaseSubmitted {
 			continue
 		}
 		var submission PhaseSubmission
 		if err := readJSON(task.SubmissionPath, &submission); err != nil {
 			return nil, err
+		}
+		var payload AdaptiveAnalysisPayload
+		if err := json.Unmarshal(submission.Payload, &payload); err != nil {
+			return nil, err
+		}
+		return &payload, nil
+	}
+	return nil, fmt.Errorf("analysis phase for unit %q is incomplete", unitID)
+}
+
+func validateCandidate(request *Request, workflow *Workflow, unitID string, candidate *Candidate, seen, invariantIDs, questionIDs map[string]bool, renderReady bool) []PhaseRejection {
+	rejections := make([]PhaseRejection, 0)
+	candidate.ID = strings.TrimSpace(candidate.ID)
+	if candidate.ID == "" || seen[candidate.ID] {
+		rejections = append(rejections, PhaseRejection{Code: "invalid_candidate_id", Message: "candidate IDs must be non-empty and unique"})
+	} else {
+		seen[candidate.ID] = true
+	}
+	if strings.TrimSpace(candidate.Title) == "" || strings.TrimSpace(candidate.Trigger) == "" || strings.TrimSpace(candidate.Impact) == "" || len(candidate.Evidence) == 0 {
+		rejections = append(rejections, PhaseRejection{Code: "incomplete_candidate", Message: "candidates require title, trigger, impact, and evidence"})
+	}
+	if renderReady && (!allowedSeverity(candidate.Severity) || !allowedCategory(candidate.Category) || strings.TrimSpace(candidate.Explanation) == "") {
+		rejections = append(rejections, PhaseRejection{Code: "candidate_not_render_ready", Message: "adaptive candidates require valid severity, category, and explanation"})
+	}
+	if candidate.Confidence <= 0 || candidate.Confidence > 1 {
+		rejections = append(rejections, PhaseRejection{Code: "invalid_candidate_confidence", Message: "candidate confidence must be greater than 0 and at most 1"})
+	}
+	unit, file := findTarget(request, unitID, candidate.File)
+	if unit == nil || file == nil {
+		rejections = append(rejections, PhaseRejection{Code: "candidate_target_invalid", Message: "candidate must reference a file in its review unit"})
+	} else if candidate.StartLine < 1 || candidate.EndLine < candidate.StartLine || candidate.EndLine > file.LineCount || (request.Mode == ModeDiff && !rangeTouchesChangedLine(file.Diff, candidate.StartLine, candidate.EndLine)) {
+		rejections = append(rejections, PhaseRejection{Code: "candidate_anchor_invalid", Message: "candidate must anchor a valid changed line"})
+	}
+	for i := range candidate.Evidence {
+		rejections = append(rejections, validateEvidenceRef(request, workflow, &candidate.Evidence[i])...)
+	}
+	for _, invariantID := range candidate.InvariantIDs {
+		if !invariantIDs[invariantID] {
+			rejections = append(rejections, PhaseRejection{Code: "unknown_invariant_id", Message: fmt.Sprintf("candidate %q references unknown invariant %q", candidate.ID, invariantID)})
+		}
+	}
+	for _, questionID := range candidate.QuestionIDs {
+		if !questionIDs[questionID] {
+			rejections = append(rejections, PhaseRejection{Code: "unknown_question_id", Message: fmt.Sprintf("candidate %q references uninvestigated question %q", candidate.ID, questionID)})
+		}
+	}
+	return rejections
+}
+
+func candidatesForUnit(workflow *Workflow, unitID string) ([]Candidate, error) {
+	for _, task := range workflow.Tasks {
+		if (task.Phase != PhaseCandidates && task.Phase != PhaseAnalysis) || task.UnitID != unitID || task.State != PhaseSubmitted {
+			continue
+		}
+		var submission PhaseSubmission
+		if err := readJSON(task.SubmissionPath, &submission); err != nil {
+			return nil, err
+		}
+		if task.Phase == PhaseAnalysis {
+			var payload AdaptiveAnalysisPayload
+			if err := json.Unmarshal(submission.Payload, &payload); err != nil {
+				return nil, err
+			}
+			return payload.Candidates, nil
 		}
 		var payload CandidatesPayload
 		if err := json.Unmarshal(submission.Payload, &payload); err != nil {
@@ -727,6 +1261,8 @@ func PhasePrompt(repo, sessionID, taskID string) (string, error) {
 		fmt.Fprintf(&out, "File: %s\n", file.Path)
 	}
 	switch task.Phase {
+	case PhaseAnalysis:
+		out.WriteString("Analyze intent, impact, risk, deterministic questions, and complete render-ready candidates in one pass. Return AdaptiveAnalysisPayload JSON.\n")
 	case PhaseIntent:
 		out.WriteString("Extract changed behavior and evidence-backed invariants. Return IntentPayload JSON.\n")
 	case PhaseImpact:
@@ -745,8 +1281,13 @@ func PhasePrompt(repo, sessionID, taskID string) (string, error) {
 				fmt.Fprintf(&out, "Evidence: %s:%d-%d\n", evidence.File, evidence.StartLine, evidence.EndLine)
 			}
 		}
+		if request.ProtocolVersion == AdaptiveProtocolVersion {
+			out.WriteString("Use the same host/model in a fresh context. You may add complete newly discovered candidates; revise verdicts require a complete replacement candidate.\n")
+		}
 	case PhaseFinalize:
 		out.WriteString("Synthesize critic results. Resolve every candidate as submit or drop with reasons. Unsupported candidates need override reason and additional evidence. Return FinalizePayload JSON.\n")
+	case PhaseResolve:
+		out.WriteString("Resolve only critic disagreements, revisions, and newly discovered candidates in the original primary context. Critic-rejected submissions need an override reason and additional evidence. Return ResolvePayload JSON.\n")
 	}
 	return out.String(), nil
 }
@@ -768,10 +1309,22 @@ func CreatePhaseDraft(repo, sessionID, taskID string) (*PhaseSubmission, string,
 	}
 	task := workflow.Tasks[index]
 	draft := &PhaseSubmission{
-		ProtocolVersion: ProtocolVersion, SessionID: sessionID, TaskID: task.ID,
+		ProtocolVersion: request.ProtocolVersion, SessionID: sessionID, TaskID: task.ID,
 		UnitID: task.UnitID, Phase: task.Phase,
 		Communication: Communication{Mode: request.Instructions.TokenEconomy.Mode, Level: request.Instructions.TokenEconomy.Level},
 		Payload:       emptyPhasePayload(task.Phase),
+	}
+	if request.Instructions.TokenEconomy.Mode == TokenEconomyNormal {
+		draft.Communication.Backend = CommunicationNormal
+	} else if workflow.CommunicationBackend != "" {
+		draft.Communication.Backend = workflow.CommunicationBackend
+	}
+	if workflow.PrimaryExecutor != nil {
+		draft.Executor.Host = workflow.PrimaryExecutor.Host
+		draft.Executor.Model = workflow.PrimaryExecutor.Model
+		if task.Phase != PhaseCritique {
+			draft.Executor.ContextID = workflow.PrimaryExecutor.ContextID
+		}
 	}
 	path := filepath.Join(SessionDir(repo, sessionID), "phases", task.Phase, task.UnitID, task.ID+".input.json")
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -815,6 +1368,10 @@ func emptyPhasePayload(phase string) json.RawMessage {
 		return marshalPhasePayload(CritiquePayload{Verdicts: []CritiqueVerdict{}})
 	case PhaseFinalize:
 		return marshalPhasePayload(FinalizePayload{CandidateDispositions: []CandidateDisposition{}})
+	case PhaseAnalysis:
+		return marshalPhasePayload(AdaptiveAnalysisPayload{BehaviorChanges: []EvidenceStatement{}, Invariants: []EvidenceStatement{}, Traces: []ImpactTrace{}, Questions: []InvestigatedQuestion{}, Candidates: []Candidate{}})
+	case PhaseResolve:
+		return marshalPhasePayload(ResolvePayload{CandidateDispositions: []CandidateDisposition{}})
 	default:
 		return json.RawMessage(`{}`)
 	}
@@ -873,6 +1430,24 @@ func verdictsForUnit(workflow *Workflow, unitID string) (map[string]CritiqueVerd
 	return nil, fmt.Errorf("critique phase for unit %q is incomplete", unitID)
 }
 
+func critiqueForUnit(workflow *Workflow, unitID string) (*CritiquePayload, error) {
+	for _, task := range workflow.Tasks {
+		if task.Phase != PhaseCritique || task.UnitID != unitID || task.State != PhaseSubmitted {
+			continue
+		}
+		var submission PhaseSubmission
+		if err := readJSON(task.SubmissionPath, &submission); err != nil {
+			return nil, err
+		}
+		var payload CritiquePayload
+		if err := json.Unmarshal(submission.Payload, &payload); err != nil {
+			return nil, err
+		}
+		return &payload, nil
+	}
+	return nil, fmt.Errorf("critique phase for unit %q is incomplete", unitID)
+}
+
 func workflowFinalDispositions(workflow *Workflow) ([]CandidateDisposition, error) {
 	result := make([]CandidateDisposition, 0)
 	for _, task := range workflow.Tasks {
@@ -890,6 +1465,150 @@ func workflowFinalDispositions(workflow *Workflow) ([]CandidateDisposition, erro
 		result = append(result, payload.CandidateDispositions...)
 	}
 	return result, nil
+}
+
+func adaptiveSubmission(request *Request, workflow *Workflow) (*Submission, error) {
+	draft := &Submission{
+		ProtocolVersion: AdaptiveProtocolVersion,
+		SessionID:       request.SessionID,
+		Findings:        []Finding{},
+	}
+	accepted := make([]struct {
+		unitID    string
+		candidate Candidate
+	}, 0)
+	for _, unit := range request.Units {
+		analysis, err := analysisForUnit(workflow, unit.ID)
+		if err != nil {
+			return nil, err
+		}
+		if !hasSubmittedTask(workflow.Tasks, PhaseCritique, unit.ID) {
+			continue
+		}
+		critique, err := critiqueForUnit(workflow, unit.ID)
+		if err != nil {
+			return nil, err
+		}
+		originals := map[string]Candidate{}
+		for _, candidate := range analysis.Candidates {
+			originals[candidate.ID] = candidate
+		}
+		resolved, err := resolveDispositionsForUnit(workflow, unit.ID)
+		if err != nil {
+			return nil, err
+		}
+		for _, verdict := range critique.Verdicts {
+			switch verdict.Verdict {
+			case CritiqueSupported:
+				disposition := CandidateDisposition{CandidateID: verdict.CandidateID, Outcome: DispositionSubmit, Reason: "Supported by the critic."}
+				draft.CandidateDispositions = append(draft.CandidateDispositions, disposition)
+				accepted = append(accepted, struct {
+					unitID    string
+					candidate Candidate
+				}{unit.ID, originals[verdict.CandidateID]})
+			case CritiqueUnsupported:
+				disposition := resolved[verdict.CandidateID]
+				draft.CandidateDispositions = append(draft.CandidateDispositions, disposition)
+				if disposition.Outcome == DispositionSubmit {
+					accepted = append(accepted, struct {
+						unitID    string
+						candidate Candidate
+					}{unit.ID, originals[verdict.CandidateID]})
+				}
+			case CritiqueRevise:
+				if verdict.Replacement != nil {
+					disposition := resolved[verdict.Replacement.ID]
+					draft.CandidateDispositions = append(draft.CandidateDispositions, disposition)
+					if disposition.Outcome == DispositionSubmit {
+						accepted = append(accepted, struct {
+							unitID    string
+							candidate Candidate
+						}{unit.ID, *verdict.Replacement})
+					}
+				}
+			}
+		}
+		for _, candidate := range critique.NewCandidates {
+			disposition := resolved[candidate.ID]
+			draft.CandidateDispositions = append(draft.CandidateDispositions, disposition)
+			if disposition.Outcome == DispositionSubmit {
+				accepted = append(accepted, struct {
+					unitID    string
+					candidate Candidate
+				}{unit.ID, candidate})
+			}
+		}
+	}
+	questionFinding := map[string]int{}
+	for _, item := range accepted {
+		candidate := item.candidate
+		index := len(draft.Findings)
+		draft.Findings = append(draft.Findings, Finding{
+			CandidateID: candidate.ID, UnitID: item.unitID, File: candidate.File,
+			StartLine: candidate.StartLine, EndLine: candidate.EndLine, Severity: candidate.Severity,
+			Category: candidate.Category, Explanation: candidate.Explanation, Evidence: evidenceSummary(candidate.Evidence),
+			SuggestedFix: candidate.SuggestedFix, Confidence: candidate.Confidence,
+		})
+		for _, questionID := range candidate.QuestionIDs {
+			questionFinding[questionID] = index
+		}
+	}
+	for _, unit := range request.Units {
+		analysis, err := analysisForUnit(workflow, unit.ID)
+		if err != nil {
+			return nil, err
+		}
+		for _, question := range analysis.Questions {
+			resolution := QuestionResolution{QuestionID: question.QuestionID, Outcome: "no_finding", Evidence: strings.TrimSpace(question.Conclusion + " " + evidenceSummary(question.Evidence))}
+			if index, ok := questionFinding[question.QuestionID]; ok {
+				resolution.Outcome = "finding"
+				resolution.FindingIndex = &index
+			}
+			draft.QuestionResolutions = append(draft.QuestionResolutions, resolution)
+		}
+	}
+	return draft, nil
+}
+
+func hasSubmittedTask(tasks []PhaseTask, phase, unitID string) bool {
+	for _, task := range tasks {
+		if task.Phase == phase && task.UnitID == unitID && task.State == PhaseSubmitted {
+			return true
+		}
+	}
+	return false
+}
+
+func resolveDispositionsForUnit(workflow *Workflow, unitID string) (map[string]CandidateDisposition, error) {
+	result := map[string]CandidateDisposition{}
+	for _, task := range workflow.Tasks {
+		if task.Phase != PhaseResolve || task.UnitID != unitID {
+			continue
+		}
+		if task.State != PhaseSubmitted {
+			return nil, fmt.Errorf("resolve phase for unit %q is incomplete", unitID)
+		}
+		var submission PhaseSubmission
+		if err := readJSON(task.SubmissionPath, &submission); err != nil {
+			return nil, err
+		}
+		var payload ResolvePayload
+		if err := json.Unmarshal(submission.Payload, &payload); err != nil {
+			return nil, err
+		}
+		for _, disposition := range payload.CandidateDispositions {
+			result[disposition.CandidateID] = disposition
+		}
+	}
+	return result, nil
+}
+
+func evidenceSummary(evidence []EvidenceRef) string {
+	parts := make([]string, 0, len(evidence))
+	for _, ref := range evidence {
+		parts = append(parts, fmt.Sprintf("%s:%d-%d sha256:%s", ref.File, ref.StartLine, ref.EndLine, ref.SHA256))
+	}
+	return strings.Join(parts, "; ")
 }
 
 func requestUnit(request *Request, unitID string) (*ReviewUnit, error) {

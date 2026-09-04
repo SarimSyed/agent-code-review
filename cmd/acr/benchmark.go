@@ -102,7 +102,7 @@ func newBenchmarkDatasetCommand() *cobra.Command {
 }
 
 func newBenchmarkPrepareCommand(options *benchmarkCLIOptions) *cobra.Command {
-	var datasetPath, prURL, repository, checkoutMap, cacheDirectory string
+	var datasetPath, prURL, repository, checkoutMap, cacheDirectory, acrProfile string
 	var cavemanLevel string
 	var limit, trials int
 	var seed int64
@@ -144,6 +144,7 @@ func newBenchmarkPrepareCommand(options *benchmarkCLIOptions) *cobra.Command {
 				DatasetPath: datasetPath, PRURL: prURL, Limit: limit, All: allCases,
 				Trials: trials, Seed: seed, Repository: repository,
 				RepositoryOverrides: overrides, CacheDir: cacheDirectory, TokenEconomy: tokenEconomy,
+				ACRProfile: acrProfile,
 			})
 			if err != nil {
 				return err
@@ -165,6 +166,7 @@ func newBenchmarkPrepareCommand(options *benchmarkCLIOptions) *cobra.Command {
 	command.Flags().StringVar(&repository, "repo", "", "existing checkout override for a one-case run")
 	command.Flags().StringVar(&checkoutMap, "checkout-map", "", "JSON object mapping case IDs to existing checkouts")
 	command.Flags().StringVar(&cacheDirectory, "cache-dir", "", "managed Git mirror cache")
+	command.Flags().StringVar(&acrProfile, "acr-profile", delegation.ReviewProfileDeep, "ACR arm profile: deep or adaptive")
 	command.Flags().BoolVar(&caveman, "caveman", false, "use token-economical agent communication for both arms")
 	command.Flags().StringVar(&cavemanLevel, "caveman-level", "", "Caveman intensity: lite, full, or ultra (default: full)")
 	_ = command.MarkFlagRequired("dataset")

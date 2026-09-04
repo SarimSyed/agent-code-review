@@ -9,16 +9,18 @@ package delegation
 import "time"
 
 const (
-	ProtocolVersion       = "2"
-	LegacyProtocolVersion = "1"
-	ModeDiff              = "diff"
-	ModeScan              = "scan"
-	ReviewProfileStandard = "standard"
-	ReviewProfileDeep     = "deep"
-	RequestFileName       = "request.json"
-	FindingsFileName      = "findings.json"
-	ResultFileName        = "result.json"
-	WorkflowFileName      = "workflow.json"
+	ProtocolVersion         = "2"
+	AdaptiveProtocolVersion = "3"
+	LegacyProtocolVersion   = "1"
+	ModeDiff                = "diff"
+	ModeScan                = "scan"
+	ReviewProfileStandard   = "standard"
+	ReviewProfileDeep       = "deep"
+	ReviewProfileAdaptive   = "adaptive"
+	RequestFileName         = "request.json"
+	FindingsFileName        = "findings.json"
+	ResultFileName          = "result.json"
+	WorkflowFileName        = "workflow.json"
 )
 
 const (
@@ -249,6 +251,13 @@ type ReviewAssurance struct {
 	Dropped              int    `json:"dropped"`
 	Overrides            int    `json:"overrides"`
 	EvidenceFiles        int    `json:"evidence_files"`
+	AnalysisMS           int64  `json:"analysis_ms,omitempty"`
+	CritiqueMS           int64  `json:"critique_ms,omitempty"`
+	ResolutionMS         int64  `json:"resolution_ms,omitempty"`
+	TotalElapsedMS       int64  `json:"total_elapsed_ms,omitempty"`
+	BatchCalls           int    `json:"batch_calls,omitempty"`
+	ValidationRejections int    `json:"validation_rejections,omitempty"`
+	CriticFallbacks      int    `json:"critic_fallbacks,omitempty"`
 }
 
 type ResultSummary struct {

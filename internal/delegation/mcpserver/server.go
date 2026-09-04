@@ -93,13 +93,15 @@ type phaseNextArgs struct {
 	Repo      string `json:"repo"`
 	SessionID string `json:"session_id"`
 	Worker    string `json:"worker"`
+	All       bool   `json:"all,omitempty"`
 }
 
 type phaseSubmitArgs struct {
-	Repo       string                     `json:"repo"`
-	SessionID  string                     `json:"session_id"`
-	TaskID     string                     `json:"task_id"`
-	Submission delegation.PhaseSubmission `json:"submission"`
+	Repo        string                       `json:"repo"`
+	SessionID   string                       `json:"session_id"`
+	TaskID      string                       `json:"task_id"`
+	Submission  delegation.PhaseSubmission   `json:"submission"`
+	Submissions []delegation.PhaseSubmission `json:"submissions,omitempty"`
 }
 
 func handlePrepare(ctx context.Context, raw json.RawMessage) (any, error) {
@@ -129,6 +131,31 @@ func handlePhaseNext(_ context.Context, raw json.RawMessage) (any, error) {
 	if args.Repo == "" || args.SessionID == "" || args.Worker == "" {
 		return nil, fmt.Errorf("repo, session_id, and worker are required")
 	}
+	if args.All {
+		tasks, err := delegation.ClaimReadyPhases(args.Repo, args.SessionID, args.Worker, time.Now().UTC(), 15*time.Minute)
+		if err != nil {
+			return nil, err
+		}
+		prompts := make([]string, 0, len(tasks))
+		drafts := make([]delegation.PhaseSubmission, 0, len(tasks))
+		paths := make([]string, 0, len(tasks))
+		protocol := ""
+		for _, task := range tasks {
+			prompt, promptErr := delegation.PhasePrompt(args.Repo, args.SessionID, task.ID)
+			if promptErr != nil {
+				return nil, promptErr
+			}
+			draft, path, draftErr := delegation.CreatePhaseDraft(args.Repo, args.SessionID, task.ID)
+			if draftErr != nil {
+				return nil, draftErr
+			}
+			protocol = draft.ProtocolVersion
+			prompts = append(prompts, prompt)
+			drafts = append(drafts, *draft)
+			paths = append(paths, path)
+		}
+		return map[string]any{"protocol_version": protocol, "session_id": args.SessionID, "tasks": tasks, "prompt": strings.Join(prompts, "\n"), "prompts": prompts, "input_paths": paths, "submissions": drafts}, nil
+	}
 	task, err := delegation.ClaimNextPhase(args.Repo, args.SessionID, args.Worker, time.Now().UTC(), 15*time.Minute)
 	if err != nil {
 		return nil, err
@@ -141,7 +168,7 @@ func handlePhaseNext(_ context.Context, raw json.RawMessage) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"protocol_version": delegation.ProtocolVersion, "session_id": args.SessionID, "task": task, "prompt": prompt, "input_path": inputPath, "submission": draft}, nil
+	return map[string]any{"protocol_version": draft.ProtocolVersion, "session_id": args.SessionID, "task": task, "prompt": prompt, "input_path": inputPath, "submission": draft}, nil
 }
 
 func handlePhaseSubmit(_ context.Context, raw json.RawMessage) (any, error) {
@@ -149,8 +176,20 @@ func handlePhaseSubmit(_ context.Context, raw json.RawMessage) (any, error) {
 	if err := json.Unmarshal(raw, &args); err != nil {
 		return nil, fmt.Errorf("decode review_phase_submit arguments: %w", err)
 	}
-	if args.Repo == "" || args.SessionID == "" || args.TaskID == "" {
-		return nil, fmt.Errorf("repo, session_id, and task_id are required")
+	if args.Repo == "" || args.SessionID == "" {
+		return nil, fmt.Errorf("repo and session_id are required")
+	}
+	if len(args.Submissions) > 0 {
+		if args.TaskID != "" || args.Submission.TaskID != "" {
+			return nil, fmt.Errorf("submissions is mutually exclusive with task_id and submission")
+		}
+		if len(args.Submissions) == 0 {
+			return nil, fmt.Errorf("submissions must not be empty")
+		}
+		return delegation.SubmitPhaseBatch(args.Repo, args.SessionID, delegation.PhaseBatchSubmission{ProtocolVersion: args.Submissions[0].ProtocolVersion, SessionID: args.SessionID, Submissions: args.Submissions})
+	}
+	if args.TaskID == "" || args.Submission.TaskID == "" {
+		return nil, fmt.Errorf("task_id and submission are required")
 	}
 	return delegation.SubmitPhase(args.Repo, args.SessionID, args.TaskID, args.Submission)
 }
@@ -315,7 +354,7 @@ func prepareSchema() map[string]any {
 		"to": map[string]any{"type": "string"}, "commit": map[string]any{"type": "string"},
 		"paths":     map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
 		"rule_path": map[string]any{"type": "string"}, "background": map[string]any{"type": "string"},
-		"profile":       map[string]any{"type": "string", "enum": []string{delegation.ReviewProfileDeep, delegation.ReviewProfileStandard}},
+		"profile":       map[string]any{"type": "string", "enum": []string{delegation.ReviewProfileDeep, delegation.ReviewProfileAdaptive, delegation.ReviewProfileStandard}},
 		"caveman":       map[string]any{"type": "boolean"},
 		"caveman_level": map[string]any{"type": "string", "enum": []string{delegation.CavemanLite, delegation.CavemanFull, delegation.CavemanUltra}},
 	}, []string{"repo"})
@@ -324,6 +363,7 @@ func prepareSchema() map[string]any {
 func phaseNextSchema() map[string]any {
 	return objectSchema(map[string]any{
 		"repo": map[string]any{"type": "string"}, "session_id": map[string]any{"type": "string"}, "worker": map[string]any{"type": "string"},
+		"all": map[string]any{"type": "boolean"},
 	}, []string{"repo", "session_id", "worker"})
 }
 
@@ -331,7 +371,8 @@ func phaseSubmitSchema() map[string]any {
 	return objectSchema(map[string]any{
 		"repo": map[string]any{"type": "string"}, "session_id": map[string]any{"type": "string"},
 		"task_id": map[string]any{"type": "string"}, "submission": map[string]any{"type": "object"},
-	}, []string{"repo", "session_id", "task_id", "submission"})
+		"submissions": map[string]any{"type": "array", "minItems": 1, "items": map[string]any{"type": "object"}},
+	}, []string{"repo", "session_id"})
 }
 
 func sessionSchema() map[string]any {

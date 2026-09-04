@@ -49,6 +49,7 @@ type PrepareRunOptions struct {
 	RepositoryOverrides map[string]string
 	CacheDir            string
 	TokenEconomy        delegation.TokenEconomy
+	ACRProfile          string
 }
 
 type Selection struct {
@@ -71,6 +72,7 @@ type Run struct {
 	Evaluations     []Evaluation            `json:"evaluations,omitempty"`
 	SetupFailures   []SetupFailure          `json:"setup_failures,omitempty"`
 	TokenEconomy    delegation.TokenEconomy `json:"token_economy"`
+	ACRProfile      string                  `json:"acr_profile"`
 }
 
 type SetupFailure struct {
@@ -190,6 +192,12 @@ func PrepareRun(ctx context.Context, workspace string, options PrepareRunOptions
 	if err != nil {
 		return nil, err
 	}
+	if options.ACRProfile == "" {
+		options.ACRProfile = delegation.ReviewProfileDeep
+	}
+	if options.ACRProfile != delegation.ReviewProfileDeep && options.ACRProfile != delegation.ReviewProfileAdaptive {
+		return nil, fmt.Errorf("acr profile must be deep or adaptive")
+	}
 	root, err := filepath.Abs(workspace)
 	if err != nil {
 		return nil, fmt.Errorf("resolve benchmark workspace: %w", err)
@@ -201,7 +209,7 @@ func PrepareRun(ctx context.Context, workspace string, options PrepareRunOptions
 	run := &Run{
 		ProtocolVersion: BenchmarkProtocolVersion, ID: runID, CreatedAt: time.Now().UTC(),
 		Dataset: manifest.Dataset, Seed: options.Seed, Trials: options.Trials, Workspace: root,
-		Cases: selected, Tasks: make([]Task, 0, len(selected)*options.Trials*2), TokenEconomy: tokenEconomy,
+		Cases: selected, Tasks: make([]Task, 0, len(selected)*options.Trials*2), TokenEconomy: tokenEconomy, ACRProfile: options.ACRProfile,
 	}
 	runRoot := RunDir(root, runID)
 	if err := os.MkdirAll(filepath.Join(runRoot, "tasks"), 0o700); err != nil {
@@ -235,7 +243,7 @@ func PrepareRun(ctx context.Context, workspace string, options PrepareRunOptions
 			pair := make([]Task, 0, 2)
 			pairFailed := false
 			for _, arm := range []string{ArmBaseline, ArmACR} {
-				task, taskErr := prepareReviewTask(ctx, runRoot, repository, benchmarkCase, trial, arm, tokenEconomy)
+				task, taskErr := prepareReviewTask(ctx, runRoot, repository, benchmarkCase, trial, arm, tokenEconomy, options.ACRProfile)
 				if taskErr != nil {
 					run.SetupFailures = append(run.SetupFailures, SetupFailure{CaseID: benchmarkCase.ID, Message: taskErr.Error()})
 					pairFailed = true
@@ -292,7 +300,7 @@ func SelectCases(cases []Case, selection Selection) []Case {
 	return selected
 }
 
-func prepareReviewTask(ctx context.Context, runRoot, repository string, benchmarkCase Case, trial int, arm string, tokenEconomy delegation.TokenEconomy) (Task, error) {
+func prepareReviewTask(ctx context.Context, runRoot, repository string, benchmarkCase Case, trial int, arm string, tokenEconomy delegation.TokenEconomy, acrProfile string) (Task, error) {
 	taskID := fmt.Sprintf("%s-t%02d-%s", benchmarkCase.ID, trial, arm)
 	taskRoot := filepath.Join(runRoot, "tasks", taskID)
 	checkout := filepath.Join(taskRoot, "checkout")
@@ -316,7 +324,7 @@ func prepareReviewTask(ctx context.Context, runRoot, repository string, benchmar
 	if arm == ArmACR {
 		request, err := delegation.Build(ctx, delegation.BuildOptions{
 			RepoDir: checkout, From: benchmarkCase.BaseSHA, To: benchmarkCase.HeadSHA,
-			Profile: delegation.ReviewProfileDeep, TokenEconomy: tokenEconomy,
+			Profile: acrProfile, TokenEconomy: tokenEconomy,
 		})
 		if err != nil {
 			return Task{}, fmt.Errorf("prepare ACR task %s: %w", taskID, err)
