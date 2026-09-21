@@ -103,7 +103,7 @@ func newBenchmarkDatasetCommand() *cobra.Command {
 
 func newBenchmarkPrepareCommand(options *benchmarkCLIOptions) *cobra.Command {
 	var datasetPath, prURL, repository, checkoutMap, cacheDirectory string
-	var cavemanLevel string
+	var cavemanLevel, profile string
 	var limit, trials int
 	var seed int64
 	var allCases, caveman bool
@@ -142,7 +142,7 @@ func newBenchmarkPrepareCommand(options *benchmarkCLIOptions) *cobra.Command {
 			}
 			run, err := benchmark.PrepareRun(cmd.Context(), workspace, benchmark.PrepareRunOptions{
 				DatasetPath: datasetPath, PRURL: prURL, Limit: limit, All: allCases,
-				Trials: trials, Seed: seed, Repository: repository,
+				Trials: trials, Seed: seed, Repository: repository, Profile: profile,
 				RepositoryOverrides: overrides, CacheDir: cacheDirectory, TokenEconomy: tokenEconomy,
 			})
 			if err != nil {
@@ -156,6 +156,7 @@ func newBenchmarkPrepareCommand(options *benchmarkCLIOptions) *cobra.Command {
 			})
 		},
 	}
+	command.Flags().StringVar(&profile, "profile", delegation.ReviewProfileDeep, "ACR review profile: standard or deep")
 	command.Flags().StringVar(&datasetPath, "dataset", "", "canonical benchmark manifest")
 	command.Flags().StringVar(&prURL, "pr", "", "select one PR URL")
 	command.Flags().IntVar(&limit, "limit", 0, "select a deterministic bounded sample")

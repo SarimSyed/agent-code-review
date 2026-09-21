@@ -64,7 +64,15 @@ type ProcessAggregate struct {
 	CriticModes      map[string]int `json:"critic_modes"`
 }
 
+type ElapsedAggregate struct {
+	Tasks   int     `json:"tasks"`
+	Seconds float64 `json:"seconds"`
+}
+
 type Report struct {
+	BaselineElapsed       ElapsedAggregate        `json:"baseline_elapsed"`
+	ACRElapsed            ElapsedAggregate        `json:"acr_elapsed"`
+	ReviewProfile         string                  `json:"review_profile"`
 	ProtocolVersion       string                  `json:"protocol_version"`
 	RunID                 string                  `json:"run_id"`
 	Complete              bool                    `json:"complete"`
@@ -110,7 +118,12 @@ func BuildReport(run *Run) Report {
 	if policy.Mode == "" {
 		policy.Mode = delegation.TokenEconomyNormal
 	}
+	profile := run.ReviewProfile
+	if profile == "" {
+		profile = delegation.ReviewProfileDeep
+	}
 	report := Report{
+		ReviewProfile:   profile,
 		ProtocolVersion: BenchmarkProtocolVersion, RunID: run.ID,
 		SetupFailures: append([]SetupFailure(nil), run.SetupFailures...), TokenEconomy: policy,
 		BaselineCommunication: CommunicationAggregate{Backends: map[string]int{}},
@@ -121,9 +134,11 @@ func BuildReport(run *Run) Report {
 		report.ValidationRejections += len(task.Rejections)
 		switch task.Arm {
 		case ArmBaseline:
+			addElapsed(&report.BaselineElapsed, task)
 			addUsage(&report.BaselineUsage, task.Usage)
 			addCommunication(&report.BaselineCommunication, task.Communication)
 		case ArmACR:
+			addElapsed(&report.ACRElapsed, task)
 			addUsage(&report.ACRUsage, task.Usage)
 			addCommunication(&report.ACRCommunication, task.Communication)
 			addProcess(&report.ACRProcess, task.ReviewAssurance)
@@ -194,6 +209,14 @@ func BuildReport(run *Run) Report {
 		report.Confidence95 = &interval
 	}
 	return report
+}
+
+func addElapsed(aggregate *ElapsedAggregate, task Task) {
+	if task.StartedAt.IsZero() || task.SubmittedAt.IsZero() || task.SubmittedAt.Before(task.StartedAt) {
+		return
+	}
+	aggregate.Tasks++
+	aggregate.Seconds += task.SubmittedAt.Sub(task.StartedAt).Seconds()
 }
 
 func addUsage(aggregate *UsageAggregate, usage *Usage) {
@@ -281,6 +304,7 @@ func RenderReportMarkdown(report Report) string {
 	resultLabel := map[string]string{ArmACR: "ACR wins", ArmBaseline: "Baseline wins", "tie": "Tie", "incomplete": "Incomplete"}[report.Winner]
 	var builder strings.Builder
 	fmt.Fprintf(&builder, "# ACR Benchmark Report\n\n**Result: %s** · F1 delta: %+.3f · Coverage: %.1f%%\n\n", resultLabel, report.F1Delta, report.Coverage*100)
+	fmt.Fprintf(&builder, "ACR profile: **%s**\n\n", report.ReviewProfile)
 	if report.TokenEconomy.Mode == delegation.TokenEconomyCaveman {
 		fmt.Fprintf(&builder, "Communication: Caveman `%s`, applied equally to baseline and ACR. Actual backends: baseline %s; ACR %s.\n\n", report.TokenEconomy.Level, backendLabel(report.BaselineCommunication), backendLabel(report.ACRCommunication))
 	} else {
@@ -292,6 +316,18 @@ func RenderReportMarkdown(report Report) string {
 	fmt.Fprintf(&builder, "| ACR | %.3f | %.3f | %.3f | %.3f | %d | %d | %d |\n\n", report.ACR.Precision, report.ACR.Recall, report.ACR.F1, report.ACR.MacroF1, report.ACR.Matched, report.ACR.Expected, report.ACR.Predicted)
 	fmt.Fprintf(&builder, "Paired outcomes: %d ACR wins, %d ties, %d losses.\n", report.Wins, report.Ties, report.Losses)
 	fmt.Fprintf(&builder, "Validation rejections: %d.\n", report.ValidationRejections)
+	builder.WriteString("\n## Elapsed review time\n\nFirst claim to accepted submission, including interruptions and retries; excludes setup and judging. Totals sum measured tasks, not parallel run wall time. Missing timing is unavailable.\n\n")
+	builder.WriteString("| Reviewer | Tasks measured | Total seconds |\n|---|---:|---:|\n")
+	for _, row := range []struct {
+		name    string
+		elapsed ElapsedAggregate
+	}{{"Baseline", report.BaselineElapsed}, {"ACR", report.ACRElapsed}} {
+		if row.elapsed.Tasks == 0 {
+			fmt.Fprintf(&builder, "| %s | 0 | unavailable |\n", row.name)
+		} else {
+			fmt.Fprintf(&builder, "| %s | %d | %.3f |\n", row.name, row.elapsed.Tasks, row.elapsed.Seconds)
+		}
+	}
 	builder.WriteString("\n## Host-reported token usage\n\n")
 	builder.WriteString("Only exact host-reported counts are shown.\n\n")
 	builder.WriteString("| Reviewer | Tasks reporting | Input | Output | Total |\n")

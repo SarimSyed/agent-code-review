@@ -400,7 +400,7 @@ func TestBenchmarkPrepareNextSubmitAndReport(t *testing.T) {
 		t.Fatalf("unexpected benchmark status: %s", statusOutput)
 	}
 	rendered := executeCLI(t, "benchmark", "report", "--workspace", workspace, "--run", prepared.RunID)
-	if !strings.Contains(string(rendered), "**Result: Baseline wins**") {
+	if !strings.Contains(string(rendered), "**Result: Baseline wins**") || !strings.Contains(string(rendered), "ACR profile: **deep**") {
 		t.Fatalf("unexpected benchmark report:\n%s", rendered)
 	}
 }

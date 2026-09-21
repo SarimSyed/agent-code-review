@@ -105,7 +105,7 @@ acr mcp
 
 ## Benchmarking review quality
 
-The benchmark runner compares a neutral review with an ACR deep review performed by the same active host model in separate contexts. Ambiguous semantic matches are decided by two blinded judge contexts, with a third only when they disagree. The CLI never calls a model.
+The benchmark runner compares a neutral review with an ACR review (`deep` by default, or `standard`) performed by the same active host model in separate contexts. Ambiguous semantic matches are decided by two blinded judge contexts, with a third only when they disagree. The CLI never calls a model.
 
 ```bash
 # Fetch the pinned public corpus and record its revision, license, and checksum
@@ -125,6 +125,24 @@ acr benchmark submit --run <id> --task <task-id> --input <result.json>
 acr benchmark status --run <id>
 acr benchmark report --run <id> --format markdown
 ```
+
+To compare standard and deep ACR, prepare two runs with the same manifest, seed,
+case limit, and trial count. Each run pairs the selected ACR profile with a fresh
+native baseline; these are two paired experiments, not a single three-arm report.
+Use the same host model and reasoning settings throughout.
+
+```bash
+acr benchmark prepare --dataset qodo-benchmark.json --limit 10 --trials 3 --seed 1 --profile standard
+acr benchmark prepare --dataset qodo-benchmark.json --limit 10 --trials 3 --seed 1 --profile deep
+```
+
+Complete each run through the existing `next` / `submit` loop. Standard ACR uses
+the direct review submission flow; deep ACR requires all five phases. Reports
+identify the ACR profile and show elapsed seconds by reviewer. Timing starts at
+the first task claim and ends at accepted submission, includes interruptions and
+retries, and excludes preparation and judging. Totals sum measured task durations,
+not parallel run wall time. Unclaimed tasks and older runs without timestamps
+have unavailable timing. Duplicate submissions do not extend recorded time.
 
 The final submission automatically emits the Markdown comparison report. Runs live under `.acr/benchmarks/runs/`; Git mirrors use the OS user cache. Use `--repo` for an existing one-case checkout or `--checkout-map` for batch overrides.
 
